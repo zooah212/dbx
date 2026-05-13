@@ -29,6 +29,8 @@ interface AgentDriverInfo {
   installed: boolean;
   installed_version: string | null;
   update_available: boolean;
+  jre: string;
+  jre_installed: boolean;
 }
 
 interface InstallProgress {
@@ -38,13 +40,24 @@ interface InstallProgress {
 }
 
 const drivers = ref<AgentDriverInfo[]>([]);
-const jreInstalled = ref(false);
 const installing = ref<string | null>(null);
-const reinstallingJre = ref(false);
+const reinstallingJre = ref<string | null>(null);
 const refreshing = ref(false);
 const progress = ref<InstallProgress | null>(null);
 
 let unlisten: UnlistenFn | null = null;
+
+const installedJres = computed(() => {
+  const jreMap = new Map<string, boolean>();
+  for (const d of drivers.value) {
+    if (!jreMap.has(d.jre)) {
+      jreMap.set(d.jre, d.jre_installed);
+    }
+  }
+  return [...jreMap.entries()]
+    .map(([key, installed]) => ({ key, installed }))
+    .sort((a, b) => b.key.localeCompare(a.key));
+});
 
 const progressText = computed(() => {
   const p = progress.value;
@@ -65,7 +78,6 @@ const progressPercent = computed(() => {
 });
 
 async function refreshAgents() {
-  jreInstalled.value = await invoke<boolean>("check_jre_installed");
   drivers.value = await invoke<AgentDriverInfo[]>("list_installed_agents");
 }
 
@@ -106,18 +118,28 @@ async function uninstallDriver(dbType: string) {
   }
 }
 
-async function reinstallJre() {
-  reinstallingJre.value = true;
+async function reinstallJre(jreKey: string) {
+  reinstallingJre.value = jreKey;
   progress.value = null;
   try {
-    await invoke("reinstall_jre");
+    await invoke("reinstall_jre", { jreKey });
     await refreshAgents();
-    toast("JRE 重新安装成功");
+    toast(`JRE ${jreKey} 重新安装成功`);
   } catch (e: any) {
-    toast(`JRE 重新安装失败: ${e}`);
+    toast(`JRE ${jreKey} 重新安装失败: ${e}`);
   } finally {
-    reinstallingJre.value = false;
+    reinstallingJre.value = null;
     progress.value = null;
+  }
+}
+
+async function uninstallJre(jreKey: string) {
+  try {
+    await invoke("uninstall_jre", { jreKey });
+    await refreshAgents();
+    toast(`JRE ${jreKey} 已卸载`);
+  } catch (e: any) {
+    toast(String(e));
   }
 }
 
@@ -238,12 +260,7 @@ async function deleteJdbcDriver(path: string) {
 // ──────────── Lifecycle ────────────
 
 onMounted(async () => {
-  const [jre, localDrivers] = await Promise.all([
-    invoke<boolean>("check_jre_installed"),
-    invoke<AgentDriverInfo[]>("list_installed_agents_local"),
-  ]);
-  jreInstalled.value = jre;
-  drivers.value = localDrivers;
+  drivers.value = await invoke<AgentDriverInfo[]>("list_installed_agents_local");
 
   invoke<AgentDriverInfo[]>("list_installed_agents").then((result) => {
     drivers.value = result;
@@ -290,28 +307,42 @@ onUnmounted(() => {
           <!-- Agent Tab -->
           <TabsContent value="agent" class="mt-5 space-y-5">
             <!-- JRE Runtime -->
-            <div class="rounded-xl border bg-muted/20 p-4">
-              <div class="flex items-center justify-between gap-3">
+            <div v-if="installedJres.length > 0" class="rounded-xl border bg-muted/20 p-4 space-y-2.5">
+              <div v-for="jre in installedJres" :key="jre.key" class="flex items-center justify-between gap-3">
                 <div class="min-w-0">
-                  <div class="text-sm font-medium">JRE 运行时</div>
-                  <p v-if="!jreInstalled" class="text-xs text-muted-foreground mt-0.5">首次安装驱动时自动下载</p>
+                  <div class="text-sm font-medium">JRE {{ jre.key }} 运行时</div>
                 </div>
                 <div class="flex shrink-0 items-center gap-3">
-                  <span v-if="jreInstalled" class="text-xs text-green-600">已安装</span>
+                  <span v-if="jre.installed" class="text-xs text-green-600">已安装</span>
                   <span v-else class="text-xs text-muted-foreground">未安装</span>
                   <Button
-                    v-if="jreInstalled"
+                    v-if="jre.installed"
                     type="button"
                     variant="outline"
                     size="sm"
-                    :disabled="reinstallingJre || installing !== null"
-                    @click="reinstallJre"
+                    :disabled="reinstallingJre !== null || installing !== null"
+                    @click="reinstallJre(jre.key)"
                   >
                     <RotateCcw class="h-3.5 w-3.5 mr-1" />
-                    {{ reinstallingJre ? "重装中..." : "重新安装" }}
+                    {{ reinstallingJre === jre.key ? "重装中..." : "重新安装" }}
+                  </Button>
+                  <Button
+                    v-if="jre.installed"
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    class="text-muted-foreground hover:text-destructive"
+                    :disabled="reinstallingJre !== null || installing !== null"
+                    @click="uninstallJre(jre.key)"
+                  >
+                    卸载
                   </Button>
                 </div>
               </div>
+            </div>
+            <div v-else class="rounded-xl border bg-muted/20 p-4">
+              <div class="text-sm font-medium">JRE 运行时</div>
+              <p class="text-xs text-muted-foreground mt-0.5">首次安装驱动时自动下载</p>
             </div>
 
             <!-- Progress bar -->
@@ -340,6 +371,11 @@ onUnmounted(() => {
                   <div class="text-sm font-medium">{{ driver.label }}</div>
                 </div>
                 <div class="flex shrink-0 items-center gap-1.5">
+                  <span
+                    v-if="driver.jre && driver.jre !== '17'"
+                    class="rounded-full bg-blue-500/10 px-2 py-0.5 text-[11px] text-blue-600"
+                    >JRE {{ driver.jre }}</span
+                  >
                   <template v-if="driver.installed">
                     <span class="rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground"
                       >v{{ driver.installed_version }}</span

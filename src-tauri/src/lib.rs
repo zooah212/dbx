@@ -149,6 +149,7 @@ pub fn run() {
             commands::agents::install_agent,
             commands::agents::uninstall_agent,
             commands::agents::check_jre_installed,
+            commands::agents::uninstall_jre,
             commands::agents::reinstall_jre,
             commands::agents::invalidate_agent_registry_cache,
         ])

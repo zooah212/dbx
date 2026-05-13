@@ -137,6 +137,7 @@ const driverProfiles: Record<
   },
   sqlserver: { type: "sqlserver", port: 1433, user: "sa", label: "SQL Server", icon: "sqlserver" },
   oracle: { type: "oracle", port: 1521, user: "system", label: "Oracle", icon: "oracle" },
+  "oracle-10g": { type: "oracle", port: 1521, user: "system", label: "Oracle 10g", icon: "oracle" },
   elasticsearch: {
     type: "elasticsearch",
     port: 9200,
@@ -399,6 +400,7 @@ const dbOptions = [
   { value: "clickhouse", label: "ClickHouse" },
   { value: "sqlserver", label: "SQL Server" },
   { value: "oracle", label: "Oracle" },
+  { value: "oracle-10g", label: "Oracle 10g" },
   { value: "elasticsearch", label: "Elasticsearch" },
   { value: "mariadb", label: "MariaDB" },
   { value: "dm", label: "DM (Dameng)" },

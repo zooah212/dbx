@@ -162,6 +162,25 @@ pub async fn check_jre_installed(state: State<'_, Arc<AppState>>, jre_key: Optio
 }
 
 #[tauri::command]
+pub async fn uninstall_jre(state: State<'_, Arc<AppState>>, jre_key: String) -> Result<(), String> {
+    let am = &state.agent_manager;
+    let local_state = am.load_state();
+    let dependents: Vec<&str> =
+        local_state.installed_drivers.iter().filter(|(_, d)| d.jre == jre_key).map(|(k, _)| k.as_str()).collect();
+    if !dependents.is_empty() {
+        return Err(format!("JRE {} 正在被以下驱动使用: {}，请先卸载这些驱动", jre_key, dependents.join(", ")));
+    }
+    let jre_dir = am.jre_dir(&jre_key);
+    if jre_dir.exists() {
+        std::fs::remove_dir_all(&jre_dir).map_err(|e| format!("Failed to remove JRE: {e}"))?;
+    }
+    let mut local_state = am.load_state();
+    local_state.jre_versions.remove(&jre_key);
+    am.save_state(&local_state)?;
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn invalidate_agent_registry_cache() -> Result<(), String> {
     *REGISTRY_CACHE.lock().await = None;
     Ok(())
