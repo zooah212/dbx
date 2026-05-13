@@ -1,11 +1,15 @@
 use std::sync::Arc;
 
 use tauri::{Emitter, State};
+use tokio::sync::Mutex;
 
 use dbx_core::agent_manager::{AgentDriverInfo, AgentManager, AgentRegistry, InstalledDriver};
 use dbx_core::connection::AppState;
 
 const REGISTRY_PATH: &str = "https://github.com/t8y2/dbx-agents/releases/latest/download/agent-registry.json";
+
+static REGISTRY_CACHE: std::sync::LazyLock<Mutex<Option<(std::time::Instant, AgentRegistry)>>> =
+    std::sync::LazyLock::new(|| Mutex::new(None));
 
 #[tauri::command]
 pub async fn list_installed_agents(state: State<'_, Arc<AppState>>) -> Result<Vec<AgentDriverInfo>, String> {
@@ -153,6 +157,14 @@ pub async fn reinstall_jre(app: tauri::AppHandle, state: State<'_, Arc<AppState>
 }
 
 async fn fetch_registry() -> Result<AgentRegistry, String> {
+    {
+        let cache = REGISTRY_CACHE.lock().await;
+        if let Some((ts, reg)) = cache.as_ref() {
+            if ts.elapsed() < std::time::Duration::from_secs(300) {
+                return Ok(reg.clone());
+            }
+        }
+    }
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
         .build()
@@ -168,7 +180,9 @@ async fn fetch_registry() -> Result<AgentRegistry, String> {
             .and_then(|r| r.error_for_status())
         {
             Ok(resp) => {
-                return resp.json().await.map_err(|e| format!("Failed to parse registry: {e}"));
+                let reg: AgentRegistry = resp.json().await.map_err(|e| format!("Failed to parse registry: {e}"))?;
+                *REGISTRY_CACHE.lock().await = Some((std::time::Instant::now(), reg.clone()));
+                return Ok(reg);
             }
             Err(e) => {
                 last_err = format!("{e}");

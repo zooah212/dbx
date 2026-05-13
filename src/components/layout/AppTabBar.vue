@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, watch, nextTick } from "vue";
 import { useI18n } from "vue-i18n";
-import { X, Pin, ChevronRight, Table2, Code2, TableProperties } from "lucide-vue-next";
+import { X, Pin, ChevronRight, Table2, Code2, TableProperties, Package } from "lucide-vue-next";
 import {
   ContextMenu,
   ContextMenuContent,
@@ -16,6 +16,15 @@ import { useTabScroll } from "@/composables/useTabScroll";
 import { connectionColor, tabDisplayTitle, tabTooltipLines } from "@/lib/tabPresentation";
 import { hexToRgba } from "@/lib/color";
 import type { QueryTab } from "@/types/database";
+
+defineProps<{
+  showDriverStore?: boolean;
+}>();
+
+const emit = defineEmits<{
+  "toggle-driver-store": [];
+  "close-driver-store": [];
+}>();
 
 const { t } = useI18n();
 const queryStore = useQueryStore();
@@ -82,7 +91,7 @@ function tabIconClass(tab: QueryTab) {
 
 <template>
   <div
-    v-if="queryStore.tabs.length > 0"
+    v-if="queryStore.tabs.length > 0 || showDriverStore"
     class="relative flex border-b shrink-0"
     :class="
       settingsStore.editorSettings.appLayout === 'classic'
@@ -128,7 +137,10 @@ function tabIconClass(tab: QueryTab) {
                 "
                 :style="tabColorStyle(tab)"
                 :data-active-tab="tab.id === queryStore.activeTabId"
-                @click="queryStore.activeTabId = tab.id"
+                @click="
+                  queryStore.activeTabId = tab.id;
+                  emit('close-driver-store');
+                "
                 @mousedown.middle.prevent="queryStore.closeTab(tab.id)"
               >
                 <span class="shrink-0" :class="tabIconClass(tab)">
@@ -186,6 +198,29 @@ function tabIconClass(tab: QueryTab) {
           </ContextMenuItem>
         </ContextMenuContent>
       </ContextMenu>
+
+      <!-- Driver Store Tab -->
+      <div
+        v-if="showDriverStore"
+        class="group flex min-w-38 items-center gap-1 px-2 text-xs cursor-pointer transition-colors whitespace-nowrap"
+        :class="
+          settingsStore.editorSettings.appLayout === 'classic'
+            ? ['h-full border-r border-border/50 bg-background text-foreground font-medium']
+            : ['h-7 rounded-md border text-foreground font-medium', 'border-ring']
+        "
+        :style="
+          settingsStore.editorSettings.appLayout === 'classic' ? { boxShadow: '0 1px 0 0 var(--color-background)' } : {}
+        "
+        @click="emit('toggle-driver-store')"
+      >
+        <span class="shrink-0 text-amber-600 dark:text-amber-400">
+          <Package class="h-3.5 w-3.5" />
+        </span>
+        <span class="min-w-0 truncate flex-1">驱动管理</span>
+        <button class="rounded hover:bg-muted-foreground/20 p-0.5 shrink-0" @click.stop="emit('close-driver-store')">
+          <X class="h-3 w-3" />
+        </button>
+      </div>
     </div>
     <button
       v-if="canScrollRight"

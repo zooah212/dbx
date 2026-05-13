@@ -1131,7 +1131,7 @@ function openExternalUrl(url: string) {
                   <div v-if="AGENT_DRIVER_TYPES.has(form.db_type)" class="grid grid-cols-4 items-center gap-4">
                     <span />
                     <p class="col-span-3 text-xs text-muted-foreground">
-                      需要在设置 → 驱动中安装对应的 Agent 驱动才能连接。
+                      需要在顶部导航栏「驱动管理」中安装对应的驱动才能连接。
                     </p>
                   </div>
 

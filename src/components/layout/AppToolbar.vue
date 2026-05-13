@@ -17,6 +17,7 @@ import {
   TableProperties,
   Settings,
   CloudDownload,
+  Package,
 } from "lucide-vue-next";
 import { Button } from "@/components/ui/button";
 import {
@@ -42,6 +43,7 @@ defineProps<{
   themeMode: AppThemeMode;
   showAiPanel: boolean;
   showHistory: boolean;
+  showDriverStore: boolean;
   checkingUpdates: boolean;
   hasConnections: boolean;
   hasSqlFileConnections: boolean;
@@ -55,6 +57,7 @@ const emit = defineEmits<{
   "toggle-history": [];
   "open-github": [];
   "open-settings": [];
+  "open-driver-store": [];
   "check-updates": [];
   "open-transfer": [];
   "open-sql-file": [];
@@ -138,6 +141,18 @@ function onToolbarDblClick(e: MouseEvent) {
     >
       <TableProperties class="h-3.5 w-3.5" />
       {{ t("dataCompare.title") }}
+    </Button>
+
+    <Button
+      v-if="isDesktop"
+      variant="ghost"
+      size="sm"
+      class="h-8 px-2 text-xs gap-1"
+      :class="{ 'bg-accent': showDriverStore }"
+      @click="emit('open-driver-store')"
+    >
+      <Package class="h-3.5 w-3.5" />
+      驱动管理
     </Button>
 
     <div class="flex-1" data-tauri-drag-region />

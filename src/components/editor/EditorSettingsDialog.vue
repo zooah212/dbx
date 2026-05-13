@@ -2,7 +2,7 @@
 import { ref, watch, shallowRef, computed } from "vue";
 import type { EditorView as EditorViewType } from "@codemirror/view";
 import { useI18n } from "vue-i18n";
-import { CircleHelp, ExternalLink, FolderOpen, Loader2, Settings, Trash2 } from "lucide-vue-next";
+import { CircleHelp, ExternalLink, Loader2, Settings } from "lucide-vue-next";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
@@ -22,15 +22,10 @@ import {
 } from "@/stores/settingsStore";
 import { loadEditorTheme, editorFontTheme } from "@/lib/editorThemes";
 import { isTauriRuntime } from "@/lib/tauriRuntime";
-import type { JdbcDriverInfo, JdbcPluginStatus } from "@/types/database";
-import * as api from "@/lib/api";
 import { aiTestConnection } from "@/lib/api";
-import DriverManager from "@/components/config/DriverManager.vue";
-import { useToast } from "@/composables/useToast";
 
 const { t } = useI18n();
 const settingsStore = useSettingsStore();
-const { toast } = useToast();
 
 const props = defineProps<{
   open: boolean;
@@ -125,13 +120,6 @@ function openExternalUrl(url: string) {
   }
 }
 
-const jdbcDrivers = ref<JdbcDriverInfo[]>([]);
-const isLoadingJdbcDrivers = ref(false);
-const jdbcPluginStatus = ref<JdbcPluginStatus | null>(null);
-const isInstallingJdbcPlugin = ref(false);
-const isUninstallingJdbcPlugin = ref(false);
-const jdbcDriverPathInput = ref("");
-
 watch(
   () => props.open,
   async (open) => {
@@ -143,8 +131,6 @@ watch(
       confirmNewPassword.value = "";
       await settingsStore.initAiConfig();
       syncAiEditState();
-      void loadJdbcDrivers();
-      void loadJdbcPluginStatus();
     }
   },
 );
@@ -187,105 +173,6 @@ async function changePassword() {
     passwordError.value = true;
   } finally {
     changingPassword.value = false;
-  }
-}
-
-function formatBytes(bytes: number) {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
-}
-
-async function loadJdbcDrivers() {
-  if (isWeb) return;
-  isLoadingJdbcDrivers.value = true;
-  try {
-    jdbcDrivers.value = await api.listJdbcDrivers();
-  } catch (e: any) {
-    toast(String(e?.message || e), 5000);
-  } finally {
-    isLoadingJdbcDrivers.value = false;
-  }
-}
-
-async function loadJdbcPluginStatus() {
-  if (isWeb) return;
-  try {
-    jdbcPluginStatus.value = await api.jdbcPluginStatus();
-  } catch (e: any) {
-    toast(String(e?.message || e), 5000);
-  }
-}
-
-async function installJdbcPlugin() {
-  if (isWeb || isInstallingJdbcPlugin.value) return;
-  isInstallingJdbcPlugin.value = true;
-  try {
-    jdbcPluginStatus.value = await api.installJdbcPlugin();
-    toast(t("settings.jdbcPluginInstallSuccess"));
-    await loadJdbcDrivers();
-  } catch (e: any) {
-    toast(String(e?.message || e), 5000);
-  } finally {
-    isInstallingJdbcPlugin.value = false;
-  }
-}
-
-async function uninstallJdbcPlugin() {
-  if (isWeb || isUninstallingJdbcPlugin.value) return;
-  isUninstallingJdbcPlugin.value = true;
-  try {
-    jdbcPluginStatus.value = await api.uninstallJdbcPlugin();
-    toast(t("settings.jdbcPluginUninstallSuccess"));
-    await loadJdbcDrivers();
-  } catch (e: any) {
-    toast(String(e?.message || e), 5000);
-  } finally {
-    isUninstallingJdbcPlugin.value = false;
-  }
-}
-
-async function importJdbcDriverPaths(paths: string[]) {
-  if (!paths.length) return;
-  try {
-    jdbcDrivers.value = await api.importJdbcDrivers(paths);
-    jdbcDriverPathInput.value = "";
-    toast(t("settings.jdbcImportSuccess", { count: paths.length }));
-  } catch (e: any) {
-    toast(String(e?.message || e), 5000);
-  }
-}
-
-async function importJdbcDrivers() {
-  if (isWeb) return;
-  const { open } = await import("@tauri-apps/plugin-dialog");
-  const selected = await open({
-    title: t("settings.jdbcImport"),
-    multiple: true,
-    filters: [{ name: "JDBC Driver", extensions: ["jar"] }],
-  });
-  if (!selected) return;
-
-  const paths = (Array.isArray(selected) ? selected : [selected]).filter(
-    (path): path is string => typeof path === "string",
-  );
-  await importJdbcDriverPaths(paths);
-}
-
-async function importJdbcDriverPathInput() {
-  const paths = jdbcDriverPathInput.value
-    .split(/\r?\n/)
-    .map((path) => path.trim())
-    .filter(Boolean);
-  await importJdbcDriverPaths(paths);
-}
-
-async function deleteJdbcDriver(path: string) {
-  try {
-    jdbcDrivers.value = await api.deleteJdbcDriver(path);
-    toast(t("settings.jdbcDeleteSuccess"));
-  } catch (e: any) {
-    toast(String(e?.message || e), 5000);
   }
 }
 
@@ -489,7 +376,6 @@ watch(
           <TabsTrigger value="editor" class="flex-1">{{ t("settings.editorTab") }}</TabsTrigger>
           <TabsTrigger value="appearance" class="flex-1">{{ t("settings.appearanceTab") }}</TabsTrigger>
           <TabsTrigger value="ai" class="flex-1">{{ t("settings.aiTab") }}</TabsTrigger>
-          <TabsTrigger v-if="!isWeb" value="jdbc" class="flex-1">驱动</TabsTrigger>
           <TabsTrigger v-if="isWeb" value="security" class="flex-1">{{ t("settings.securityTab") }}</TabsTrigger>
           <TabsTrigger value="about" class="flex-1">{{ t("settings.aboutTab") }}</TabsTrigger>
         </TabsList>
@@ -790,102 +676,6 @@ watch(
             </div>
             <Button variant="outline" @click="emit('update:open', false)">{{ t("common.close") }}</Button>
             <Button :disabled="!aiHasChanges()" @click="aiApplySettings">{{ t("settings.apply") }}</Button>
-          </DialogFooter>
-        </TabsContent>
-
-        <TabsContent v-if="!isWeb" value="jdbc" class="space-y-5 py-2">
-          <div class="rounded-md border bg-muted/20 p-4">
-            <div class="flex min-h-12 items-center justify-between gap-3">
-              <div class="min-w-0 space-y-1">
-                <Label>{{ t("settings.jdbcPlugin") }}</Label>
-                <p v-if="!jdbcPluginStatus?.installed" class="text-xs text-muted-foreground">
-                  {{ t("settings.jdbcPluginNotInstalled") }}
-                </p>
-              </div>
-              <div class="flex shrink-0 items-center gap-3">
-                <span
-                  v-if="jdbcPluginStatus?.installed"
-                  class="text-xs"
-                  :class="jdbcPluginStatus.compatible ? 'text-green-600' : 'text-destructive'"
-                >
-                  {{
-                    jdbcPluginStatus.compatible
-                      ? t("settings.jdbcPluginInstalled", {
-                          version: jdbcPluginStatus.version || "-",
-                        })
-                      : t("settings.jdbcPluginIncompatible")
-                  }}
-                </span>
-                <Button
-                  v-if="jdbcPluginStatus?.installed"
-                  type="button"
-                  variant="outline"
-                  :disabled="isUninstallingJdbcPlugin"
-                  @click="uninstallJdbcPlugin"
-                >
-                  {{ isUninstallingJdbcPlugin ? t("common.loading") : t("settings.jdbcPluginUninstall") }}
-                </Button>
-                <Button
-                  v-else
-                  type="button"
-                  variant="default"
-                  :disabled="isInstallingJdbcPlugin"
-                  @click="installJdbcPlugin"
-                >
-                  {{ isInstallingJdbcPlugin ? t("common.loading") : t("settings.jdbcPluginInstall") }}
-                </Button>
-              </div>
-            </div>
-          </div>
-
-          <div class="space-y-3">
-            <div class="space-y-1">
-              <Label>{{ t("settings.jdbcDrivers") }}</Label>
-            </div>
-            <div class="flex items-center gap-2">
-              <Input
-                v-model="jdbcDriverPathInput"
-                class="flex-1"
-                :placeholder="t('settings.jdbcDriverPathPlaceholder')"
-                @keydown.enter.prevent="importJdbcDriverPathInput"
-              />
-              <Button variant="outline" :disabled="!jdbcDriverPathInput.trim()" @click="importJdbcDriverPathInput">
-                {{ t("settings.jdbcImportPath") }}
-              </Button>
-              <Button class="shrink-0" @click="importJdbcDrivers">
-                <FolderOpen class="h-4 w-4" />
-                {{ t("settings.jdbcImport") }}
-              </Button>
-            </div>
-          </div>
-
-          <div class="rounded-md border">
-            <div v-if="isLoadingJdbcDrivers" class="p-4 text-sm text-muted-foreground">
-              {{ t("common.loading") }}
-            </div>
-            <div v-else-if="jdbcDrivers.length === 0" class="p-4 text-sm text-muted-foreground">
-              {{ t("settings.jdbcNoDrivers") }}
-            </div>
-            <div v-else class="divide-y">
-              <div v-for="driver in jdbcDrivers" :key="driver.path" class="flex items-center gap-3 p-3">
-                <div class="min-w-0 flex-1">
-                  <div class="truncate text-sm font-medium">{{ driver.name }}</div>
-                  <div class="truncate text-xs text-muted-foreground">{{ driver.path }}</div>
-                </div>
-                <div class="shrink-0 text-xs text-muted-foreground">{{ formatBytes(driver.size) }}</div>
-                <Button variant="ghost" size="icon" class="h-8 w-8 shrink-0" @click="deleteJdbcDriver(driver.path)">
-                  <Trash2 class="h-4 w-4" />
-                </Button>
-              </div>
-            </div>
-          </div>
-
-          <DriverManager />
-
-          <DialogFooter class="border-t-0 bg-transparent">
-            <Button variant="outline" @click="emit('update:open', false)">
-              {{ t("common.close") }}
-            </Button>
           </DialogFooter>
         </TabsContent>
 

@@ -11,6 +11,7 @@ import EditorToolbar from "@/components/layout/EditorToolbar.vue";
 import ContentArea from "@/components/layout/ContentArea.vue";
 import AppDialogs from "@/components/layout/AppDialogs.vue";
 import WelcomeScreen from "@/components/layout/WelcomeScreen.vue";
+import DriverStorePage from "@/components/config/DriverStoreDialog.vue";
 import UpdateDialog from "@/components/layout/UpdateDialog.vue";
 import LoginPage from "@/components/auth/LoginPage.vue";
 import { useConnectionStore } from "@/stores/connectionStore";
@@ -73,6 +74,7 @@ const setupRequired = ref(false);
 
 const showConnectionDialog = ref(false);
 const showSettingsDialog = ref(false);
+const showDriverStore = ref(false);
 const showHistory = ref(false);
 const showAiPanel = ref(localStorage.getItem("dbx-ai-panel-open") !== "false");
 const { sidebarWidth, aiPanelWidth, historyWidth, startSidebarResize, startAiPanelResize, startHistoryResize } =
@@ -159,6 +161,7 @@ watch(
   () => {
     selectedSql.value = "";
     activeOutputView.value = "result";
+    showDriverStore.value = false;
   },
 );
 
@@ -540,6 +543,7 @@ onUnmounted(() => {
           :theme-mode="themeMode"
           :show-ai-panel="showAiPanel"
           :show-history="showHistory"
+          :show-driver-store="showDriverStore"
           :checking-updates="checkingUpdates"
           :has-connections="connectionStore.connections.length > 0"
           :has-sql-file-connections="hasSqlFileConnections"
@@ -550,6 +554,7 @@ onUnmounted(() => {
           @toggle-history="showHistory = !showHistory"
           @open-github="openGitHub"
           @open-settings="showSettingsDialog = true"
+          @open-driver-store="showDriverStore = !showDriverStore"
           @check-updates="checkUpdates()"
           @open-transfer="dialogs.showTransferDialog.value = true"
           @open-sql-file="dialogs.showSqlFileDialog.value = true"
@@ -580,8 +585,13 @@ onUnmounted(() => {
             "
           >
             <div class="h-full flex flex-col min-w-0">
-              <AppTabBar />
-              <div v-if="activeTab" class="flex flex-col flex-1 min-h-0">
+              <AppTabBar
+                :show-driver-store="showDriverStore"
+                @toggle-driver-store="showDriverStore = true"
+                @close-driver-store="showDriverStore = false"
+              />
+              <DriverStorePage v-if="showDriverStore" />
+              <div v-else-if="activeTab" class="flex flex-col flex-1 min-h-0">
                 <EditorToolbar
                   v-if="activeTab.mode === 'query' && !isPreviewTab(activeTab)"
                   :active-tab="activeTab"
