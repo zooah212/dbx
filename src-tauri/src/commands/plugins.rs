@@ -43,6 +43,17 @@ pub async fn install_jdbc_plugin(state: State<'_, Arc<AppState>>) -> Result<Jdbc
 }
 
 #[tauri::command]
+pub async fn install_jdbc_plugin_local(
+    state: State<'_, Arc<AppState>>,
+    path: String,
+) -> Result<JdbcPluginStatus, String> {
+    let bytes = std::fs::read(&path).map_err(|e| format!("Failed to read file: {e}"))?;
+    let plugin_dir = state.plugins.root_dir().join("jdbc");
+    install_jdbc_plugin_zip(&bytes, &plugin_dir)?;
+    jdbc_plugin_status_from_state(&state)
+}
+
+#[tauri::command]
 pub async fn uninstall_jdbc_plugin(state: State<'_, Arc<AppState>>) -> Result<JdbcPluginStatus, String> {
     let plugin_dir = state.plugins.root_dir().join("jdbc");
     for entry in ["manifest.json", "bin", "lib"] {

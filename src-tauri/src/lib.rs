@@ -93,6 +93,7 @@ pub fn run() {
             commands::plugins::delete_jdbc_driver,
             commands::plugins::jdbc_plugin_status,
             commands::plugins::install_jdbc_plugin,
+            commands::plugins::install_jdbc_plugin_local,
             commands::plugins::uninstall_jdbc_plugin,
             commands::schema::list_databases,
             commands::schema::list_tables,

@@ -281,6 +281,27 @@ async function installJdbcPlugin() {
   }
 }
 
+async function installJdbcPluginLocal() {
+  if (isWeb || isInstallingJdbcPlugin.value) return;
+  const { open } = await import("@tauri-apps/plugin-dialog");
+  const selected = await open({
+    title: "选择 JDBC 插件 zip 文件",
+    multiple: false,
+    filters: [{ name: "ZIP", extensions: ["zip"] }],
+  });
+  if (typeof selected !== "string") return;
+  isInstallingJdbcPlugin.value = true;
+  try {
+    jdbcPluginStatus.value = await invoke<JdbcPluginStatus>("install_jdbc_plugin_local", { path: selected });
+    toast(t("settings.jdbcPluginInstallSuccess"));
+    await loadJdbcDrivers();
+  } catch (e: any) {
+    toast(String(e?.message || e), 5000);
+  } finally {
+    isInstallingJdbcPlugin.value = false;
+  }
+}
+
 async function uninstallJdbcPlugin() {
   if (isWeb || isUninstallingJdbcPlugin.value) return;
   isUninstallingJdbcPlugin.value = true;
@@ -635,6 +656,16 @@ onUnmounted(() => {
                     @click="installJdbcPlugin"
                   >
                     {{ isInstallingJdbcPlugin ? t("common.loading") : t("settings.jdbcPluginInstall") }}
+                  </Button>
+                  <Button
+                    v-if="!jdbcPluginStatus?.installed"
+                    type="button"
+                    variant="outline"
+                    :disabled="isInstallingJdbcPlugin"
+                    @click="installJdbcPluginLocal"
+                  >
+                    <FolderOpen class="h-3.5 w-3.5 mr-1" />
+                    本地安装
                   </Button>
                 </div>
               </div>
