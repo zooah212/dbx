@@ -55,10 +55,16 @@ const savingMember = ref(false);
 const memberEditValue = ref("");
 const memberDetailSheetWidth = ref(420);
 const isResizingMemberSheet = ref(false);
+const hashTableRef = ref<HTMLElement | null>(null);
+const hashFieldWidth = ref(280);
+const isResizingHashColumns = ref(false);
 const selectedMemberDetail = computed(() => formatRedisMemberDetail(selectedMemberRaw.value));
 const selectedMemberJsonHtml = computed(() =>
   selectedMemberDetail.value.format === "json" ? highlightRedisJsonDetail(selectedMemberDetail.value.text) : "",
 );
+const hashGridStyle = computed(() => ({
+  gridTemplateColumns: `${hashFieldWidth.value}px minmax(12rem, 1fr) 84px`,
+}));
 const selectedMemberCanEdit = computed(
   () => selectedMemberContext.value != null && canEditRedisMemberDetail(selectedMemberContext.value.kind),
 );
@@ -74,6 +80,8 @@ const pendingDelete = ref<PendingDelete | null>(null);
 
 let memberSheetResizeStartX = 0;
 let memberSheetResizeStartWidth = 0;
+let hashResizeStartX = 0;
+let hashResizeStartWidth = 0;
 
 type RedisMemberContext =
   | { kind: "list"; index: number }
@@ -250,6 +258,33 @@ function startResizeMemberSheet(event: PointerEvent) {
   memberSheetResizeStartWidth = memberDetailSheetWidth.value;
   window.addEventListener("pointermove", resizeMemberSheet);
   window.addEventListener("pointerup", stopResizeMemberSheet);
+}
+
+function clampHashFieldWidth(width: number) {
+  const containerWidth = hashTableRef.value?.clientWidth ?? 900;
+  const min = 120;
+  const max = Math.max(min, containerWidth - 220);
+  return Math.min(max, Math.max(min, width));
+}
+
+function stopResizeHashColumns() {
+  isResizingHashColumns.value = false;
+  window.removeEventListener("pointermove", resizeHashColumns);
+  window.removeEventListener("pointerup", stopResizeHashColumns);
+}
+
+function resizeHashColumns(event: PointerEvent) {
+  if (!isResizingHashColumns.value) return;
+  const delta = event.clientX - hashResizeStartX;
+  hashFieldWidth.value = clampHashFieldWidth(hashResizeStartWidth + delta);
+}
+
+function startResizeHashColumns(event: PointerEvent) {
+  isResizingHashColumns.value = true;
+  hashResizeStartX = event.clientX;
+  hashResizeStartWidth = hashFieldWidth.value;
+  window.addEventListener("pointermove", resizeHashColumns);
+  window.addEventListener("pointerup", stopResizeHashColumns);
 }
 
 function startEditMember() {
@@ -449,7 +484,10 @@ function formatValue(val: any): string {
 }
 
 onMounted(load);
-onBeforeUnmount(stopResizeMemberSheet);
+onBeforeUnmount(() => {
+  stopResizeMemberSheet();
+  stopResizeHashColumns();
+});
 </script>
 
 <template>
@@ -657,7 +695,7 @@ onBeforeUnmount(stopResizeMemberSheet);
       </div>
 
       <!-- Hash -->
-      <div v-else-if="data.key_type === 'hash'" class="flex-1 flex flex-col overflow-hidden">
+      <div v-else-if="data.key_type === 'hash'" ref="hashTableRef" class="flex-1 flex flex-col overflow-hidden">
         <div class="flex items-center gap-2 px-4 py-1.5 border-b shrink-0">
           <span class="text-xs text-muted-foreground">{{
             collectionCountLabel("fields", collectionItems.length, data.total)
@@ -669,8 +707,14 @@ onBeforeUnmount(stopResizeMemberSheet);
             ><Plus class="w-3 h-3 mr-1" />Set</Button
           >
         </div>
-        <div class="grid grid-cols-[minmax(8rem,0.3fr)_1fr_84px] border-b bg-muted/50 shrink-0">
-          <div class="px-3 py-1 text-xs font-medium text-muted-foreground border-r">Field</div>
+        <div class="grid border-b bg-muted/50 shrink-0" :style="hashGridStyle">
+          <div class="relative px-3 py-1 text-xs font-medium text-muted-foreground border-r select-none">
+            Field
+            <div
+              class="absolute -right-1 top-0 h-full w-2 cursor-col-resize touch-none"
+              @pointerdown.prevent="startResizeHashColumns"
+            />
+          </div>
           <div class="px-3 py-1 text-xs font-medium text-muted-foreground">Value</div>
           <div />
         </div>
@@ -678,7 +722,8 @@ onBeforeUnmount(stopResizeMemberSheet);
           <div
             v-for="(item, idx) in collectionItems"
             :key="idx"
-            class="grid grid-cols-[minmax(8rem,0.3fr)_1fr_84px] border-b text-sm font-mono hover:bg-accent/50 group cursor-pointer"
+            class="grid border-b text-sm font-mono hover:bg-accent/50 group cursor-pointer"
+            :style="hashGridStyle"
             :class="{ 'bg-accent/60': isSelectedMember(String(item.field), item.value) }"
             @click="viewMember(String(item.field), item.value, { kind: 'hash', field: String(item.field) })"
           >
