@@ -911,10 +911,6 @@ fn has_executable_sql(statement: &str) -> bool {
     has_executable_sql_with_options(statement, SqlParsingOptions::default())
 }
 
-fn executable_sql_slice(statement: &str, options: SqlParsingOptions) -> Option<&str> {
-    executable_sql_bounds(statement, options).map(|(start, end)| &statement[start..end])
-}
-
 fn executable_sql_bounds(statement: &str, options: SqlParsingOptions) -> Option<(usize, usize)> {
     let trimmed_end = statement.trim_end().len();
     let trimmed = &statement[..trimmed_end];
