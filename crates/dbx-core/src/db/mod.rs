@@ -49,13 +49,37 @@ pub fn tcp_probe_timeout() -> Duration {
     Duration::from_secs(TCP_PROBE_TIMEOUT_SECS)
 }
 
-pub async fn with_connection_timeout<T, F>(label: &str, future: F) -> Result<T, String>
+pub fn parse_connect_timeout(url: &str) -> Duration {
+    let Some(query) = url.split('?').nth(1) else {
+        return connection_timeout();
+    };
+    for param in query.split('&') {
+        let trimmed = param.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let (key, value) = match trimmed.split_once('=') {
+            Some(pair) => pair,
+            None => continue,
+        };
+        if key.eq_ignore_ascii_case("connect_timeout") || key.eq_ignore_ascii_case("connectTimeout") {
+            if let Ok(v) = value.parse::<u64>() {
+                if v >= 1 && v <= 300 {
+                    return Duration::from_secs(v);
+                }
+            }
+        }
+    }
+    connection_timeout()
+}
+
+pub async fn with_connection_timeout<T, F>(label: &str, timeout: Duration, future: F) -> Result<T, String>
 where
     F: Future<Output = Result<T, String>>,
 {
-    tokio::time::timeout(connection_timeout(), future)
+    tokio::time::timeout(timeout, future)
         .await
-        .map_err(|_| format!("{label} connection timed out ({CONNECTION_TIMEOUT_SECS}s)"))?
+        .map_err(|_| format!("{label} connection timed out ({}s)", timeout.as_secs()))?
 }
 
 pub async fn probe_tcp_endpoint(label: &str, host: &str, port: u16) -> Result<(), String> {

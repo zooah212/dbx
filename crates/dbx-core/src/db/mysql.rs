@@ -164,15 +164,16 @@ fn mysql_value_to_json(row: &mysql_async::Row, idx: usize) -> serde_json::Value 
 }
 
 pub async fn connect(url: &str) -> Result<MySqlPool, String> {
+    let timeout = super::parse_connect_timeout(url);
     let pool = create_pool(url)?;
-    let result = verify_pool_connection(&pool).await;
+    let result = verify_pool_connection(&pool, timeout).await;
 
     if let Err(ref e) = result {
         if mysql_error_should_retry_without_ssl(e) {
             if let Some(fallback_url) = ssl_fallback_url(url) {
                 log::info!("SSL handshake failed, retrying with ssl-mode=disabled");
                 let fallback_pool = create_pool(&fallback_url)?;
-                return match verify_pool_connection(&fallback_pool).await {
+                return match verify_pool_connection(&fallback_pool, timeout).await {
                     Ok(()) => Ok(fallback_pool),
                     Err(e) => Err(e),
                 };
@@ -193,8 +194,8 @@ fn create_pool(url: &str) -> Result<MySqlPool, String> {
     Ok(MySqlPool::new(builder))
 }
 
-async fn verify_pool_connection(pool: &MySqlPool) -> Result<(), String> {
-    super::with_connection_timeout("MySQL", async {
+async fn verify_pool_connection(pool: &MySqlPool, timeout: Duration) -> Result<(), String> {
+    super::with_connection_timeout("MySQL", timeout, async {
         let mut conn = pool.get_conn().await.map_err(|e| format!("MySQL connection failed: {e}"))?;
         conn.ping().await.map_err(|e| format!("MySQL ping failed: {e}"))?;
         Ok(())
@@ -242,6 +243,8 @@ fn mysql_async_url(url: &str) -> Cow<'_, str> {
                 && !segment.starts_with("charset=")
                 && !segment.starts_with("time_zone=")
                 && !segment.starts_with("time-zone=")
+                && !segment.to_ascii_lowercase().starts_with("connect_timeout=")
+                && !segment.to_ascii_lowercase().starts_with("connecttimeout=")
         })
         .collect();
 
@@ -255,8 +258,9 @@ fn mysql_async_url(url: &str) -> Cow<'_, str> {
 }
 
 pub async fn connect_bare(url: &str) -> Result<MySqlPool, String> {
+    let timeout = super::parse_connect_timeout(url);
     let pool = create_pool(url)?;
-    verify_pool_connection(&pool).await.map(|_| pool)
+    verify_pool_connection(&pool, timeout).await.map(|_| pool)
 }
 
 pub async fn list_databases(pool: &MySqlPool) -> Result<Vec<DatabaseInfo>, String> {
@@ -788,5 +792,40 @@ mod tests {
         conn.ping().await.expect("ping");
         let _ = conn.disconnect().await;
         let _ = pool.disconnect().await;
+    }
+
+    #[test]
+    fn parse_connect_timeout_extracts_underscore_form() {
+        let url = "mysql://host:3306/db?connect_timeout=30";
+        assert_eq!(super::parse_connect_timeout(url), Duration::from_secs(30));
+    }
+
+    #[test]
+    fn parse_connect_timeout_extracts_camelcase_form() {
+        let url = "mysql://host:3306/db?connectTimeout=60";
+        assert_eq!(super::parse_connect_timeout(url), Duration::from_secs(60));
+    }
+
+    #[test]
+    fn parse_connect_timeout_ignores_out_of_range() {
+        let default = super::connection_timeout();
+        let url = "mysql://host:3306/db?connect_timeout=999";
+        assert_eq!(super::parse_connect_timeout(url), default);
+        let url2 = "mysql://host:3306/db?connect_timeout=0";
+        assert_eq!(super::parse_connect_timeout(url2), default);
+    }
+
+    #[test]
+    fn parse_connect_timeout_returns_default_when_missing() {
+        let default = super::connection_timeout();
+        let url = "mysql://host:3306/db?ssl-mode=preferred&charset=utf8mb4";
+        assert_eq!(super::parse_connect_timeout(url), default);
+    }
+
+    #[test]
+    fn parse_connect_timeout_returns_default_when_no_query() {
+        let default = super::connection_timeout();
+        let url = "mysql://host:3306/db";
+        assert_eq!(super::parse_connect_timeout(url), default);
     }
 }
