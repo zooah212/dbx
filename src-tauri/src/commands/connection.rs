@@ -162,6 +162,7 @@ mod tests {
             redis_sentinel_username: String::new(),
             redis_sentinel_password: String::new(),
             redis_sentinel_tls: false,
+            redis_cluster_nodes: String::new(),
             external_config: None,
             jdbc_driver_class: None,
             jdbc_driver_paths: Vec::new(),
@@ -257,7 +258,10 @@ pub async fn test_connection(state: State<'_, Arc<AppState>>, config: Connection
                 Err(e) => Err(e),
             },
             DatabaseType::Redis => {
-                let con = if config.uses_redis_sentinel() {
+                let con = if config.uses_redis_cluster() {
+                    db::redis_driver::connect_cluster(&config).await?;
+                    return Ok("Connection successful".to_string());
+                } else if config.uses_redis_sentinel() {
                     db::redis_driver::connect_sentinel(&config).await?
                 } else {
                     db::redis_driver::connect(&url).await?
@@ -375,12 +379,20 @@ pub async fn connect_db(state: State<'_, Arc<AppState>>, config: ConnectionConfi
         }
         DatabaseType::Sqlite => PoolKind::Sqlite(db::sqlite::connect_path(&expand_tilde(&db_config.host)).await?),
         DatabaseType::Redis => {
-            let con = if db_config.uses_redis_sentinel() {
-                db::redis_driver::connect_sentinel(&db_config).await?
+            let con = if db_config.uses_redis_cluster() {
+                PoolKind::Redis(db::redis_driver::RedisConnection::Cluster(
+                    db::redis_driver::connect_cluster(&db_config).await?,
+                ))
+            } else if db_config.uses_redis_sentinel() {
+                PoolKind::Redis(db::redis_driver::RedisConnection::Direct(tokio::sync::Mutex::new(
+                    db::redis_driver::connect_sentinel(&db_config).await?,
+                )))
             } else {
-                db::redis_driver::connect(&url).await?
+                PoolKind::Redis(db::redis_driver::RedisConnection::Direct(tokio::sync::Mutex::new(
+                    db::redis_driver::connect(&url).await?,
+                )))
             };
-            PoolKind::Redis(tokio::sync::Mutex::new(con))
+            con
         }
         DatabaseType::DuckDb => {
             let con = db::duckdb_driver::connect_path(&expand_tilde(&db_config.host))?;

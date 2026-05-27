@@ -196,6 +196,25 @@ async function streamValueSearch(requestId: number) {
   }
 }
 
+async function fillInitialKeyBatch(requestId: number) {
+  const targetCount = Math.max(1, settingsStore.editorSettings.redisScanPageSize);
+  let rounds = 0;
+  while (
+    requestId === searchRequestId &&
+    searchMode.value === "key" &&
+    hasMore.value &&
+    flatKeys.value.length < targetCount
+  ) {
+    const beforeCount = flatKeys.value.length;
+    const applied = await scanNextPage(requestId);
+    if (!applied) return;
+    rounds += 1;
+    if (flatKeys.value.length >= targetCount) return;
+    if (rounds >= 12 && flatKeys.value.length === beforeCount) return;
+    if (rounds >= 24) return;
+  }
+}
+
 async function loadKeys() {
   const requestId = ++searchRequestId;
   loading.value = true;
@@ -211,8 +230,12 @@ async function loadKeys() {
       return;
     }
     const applied = await scanNextPage(requestId);
-    if (applied && searchMode.value === "value") {
-      await streamValueSearch(requestId);
+    if (applied) {
+      if (searchMode.value === "value") {
+        await streamValueSearch(requestId);
+      } else {
+        await fillInitialKeyBatch(requestId);
+      }
     }
   } finally {
     if (requestId === searchRequestId) {

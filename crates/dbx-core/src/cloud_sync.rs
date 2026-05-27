@@ -519,6 +519,7 @@ mod tests {
             redis_sentinel_username: String::new(),
             redis_sentinel_password: "sentinel".to_string(),
             redis_sentinel_tls: false,
+            redis_cluster_nodes: String::new(),
             external_config: None,
             jdbc_driver_class: None,
             jdbc_driver_paths: Vec::new(),

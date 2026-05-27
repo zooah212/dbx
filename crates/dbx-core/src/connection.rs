@@ -43,7 +43,7 @@ pub enum PoolKind {
     Mysql(db::mysql::MySqlPool, MysqlMode),
     Postgres(deadpool_postgres::Pool),
     Sqlite(db::sqlite::SqliteHandle),
-    Redis(tokio::sync::Mutex<redis::aio::MultiplexedConnection>),
+    Redis(db::redis_driver::RedisConnection),
     DuckDb(Arc<std::sync::Mutex<duckdb::Connection>>),
     MongoDb(mongodb::Client),
     ClickHouse(db::clickhouse_driver::ChClient),
@@ -187,12 +187,18 @@ impl AppState {
             }
             DatabaseType::Sqlite => PoolKind::Sqlite(db::sqlite::connect_path(&expand_tilde(&db_config.host)).await?),
             DatabaseType::Redis => {
-                let con = if db_config.uses_redis_sentinel() {
-                    db::redis_driver::connect_sentinel(&db_config).await?
+                let con = if db_config.uses_redis_cluster() {
+                    db::redis_driver::RedisConnection::Cluster(db::redis_driver::connect_cluster(&db_config).await?)
+                } else if db_config.uses_redis_sentinel() {
+                    db::redis_driver::RedisConnection::Direct(tokio::sync::Mutex::new(
+                        db::redis_driver::connect_sentinel(&db_config).await?,
+                    ))
                 } else {
-                    db::redis_driver::connect(&url).await?
+                    db::redis_driver::RedisConnection::Direct(tokio::sync::Mutex::new(
+                        db::redis_driver::connect(&url).await?,
+                    ))
                 };
-                PoolKind::Redis(tokio::sync::Mutex::new(con))
+                PoolKind::Redis(con)
             }
             DatabaseType::DuckDb => {
                 let con = db::duckdb_driver::connect_path(&expand_tilde(&db_config.host))?;
@@ -919,6 +925,7 @@ mod tests {
             redis_sentinel_username: String::new(),
             redis_sentinel_password: String::new(),
             redis_sentinel_tls: false,
+            redis_cluster_nodes: String::new(),
             external_config: None,
             jdbc_driver_class: None,
             jdbc_driver_paths: Vec::new(),

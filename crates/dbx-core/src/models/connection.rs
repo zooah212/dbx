@@ -75,6 +75,8 @@ pub struct ConnectionConfig {
     pub redis_sentinel_password: String,
     #[serde(default, skip_serializing_if = "is_false")]
     pub redis_sentinel_tls: bool,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub redis_cluster_nodes: String,
     /// Typed configuration for external tabular sources.
     #[serde(default)]
     pub external_config: Option<serde_json::Value>,
@@ -249,6 +251,11 @@ impl ConnectionConfig {
     pub fn uses_redis_sentinel(&self) -> bool {
         self.db_type == DatabaseType::Redis
             && self.redis_connection_mode.as_deref().is_some_and(|mode| mode.eq_ignore_ascii_case("sentinel"))
+    }
+
+    pub fn uses_redis_cluster(&self) -> bool {
+        self.db_type == DatabaseType::Redis
+            && self.redis_connection_mode.as_deref().is_some_and(|mode| mode.eq_ignore_ascii_case("cluster"))
     }
 
     pub fn connection_url(&self) -> String {
@@ -837,6 +844,7 @@ mod tests {
             redis_sentinel_username: String::new(),
             redis_sentinel_password: String::new(),
             redis_sentinel_tls: false,
+            redis_cluster_nodes: String::new(),
             external_config: None,
             jdbc_driver_class: None,
             jdbc_driver_paths: Vec::new(),

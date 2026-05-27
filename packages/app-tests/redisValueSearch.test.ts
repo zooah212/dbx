@@ -38,7 +38,10 @@ test("Redis value search streams incremental scan pages from the browser", () =>
   const driverSource = readFileSync("crates/dbx-core/src/db/redis_driver.rs", "utf8");
 
   assert.match(browserSource, /async function streamValueSearch/);
+  assert.match(browserSource, /async function fillInitialKeyBatch/);
   assert.match(browserSource, /searchRequestId/);
   assert.match(browserSource, /redis\.searchingValues/);
+  assert.match(browserSource, /flatKeys\.value\.length < targetCount/);
+  assert.match(browserSource, /await fillInitialKeyBatch\(requestId\)/);
   assert.doesNotMatch(driverSource, /while\s+result\.len\(\)\s*<\s*target_count/);
 });

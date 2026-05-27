@@ -1,15 +1,22 @@
 use crate::models::connection::ConnectionConfig;
 use base64::Engine;
 use redis::{
+    aio::ConnectionLike,
+    cluster::ClusterClient,
+    cluster_async::ClusterConnection,
     sentinel::{Sentinel, SentinelNodeConnectionInfo},
     ConnectionAddr, ConnectionInfo, FromRedisValue, ProtocolVersion, RedisConnectionInfo, TlsMode,
     Value as RedisRawValue,
 };
 use serde::{Deserialize, Serialize};
+use tokio::sync::Mutex;
 
 const STREAM_ENTRY_LIMIT: usize = 100;
 const COLLECTION_PAGE_SIZE: usize = 200;
 const DEFAULT_REDIS_DATABASES: u32 = 16;
+const CLUSTER_CURSOR_NODE_BITS: u64 = 16;
+const CLUSTER_CURSOR_NODE_MASK: u64 = (1 << CLUSTER_CURSOR_NODE_BITS) - 1;
+const CLUSTER_CURSOR_SCAN_MASK: u64 = (1 << (64 - CLUSTER_CURSOR_NODE_BITS)) - 1;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RedisDatabaseInfo {
@@ -61,19 +68,28 @@ pub struct RedisCommandResult {
     pub value: serde_json::Value,
 }
 
+pub enum RedisConnection {
+    Direct(Mutex<redis::aio::MultiplexedConnection>),
+    Cluster(RedisClusterPool),
+}
+
+pub struct RedisClusterPool {
+    pub connection: Mutex<ClusterConnection>,
+    pub seed_nodes: Vec<RedisNodeEndpoint>,
+    pub tls: bool,
+    pub username: String,
+    pub password: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct RedisNodeEndpoint {
+    pub host: String,
+    pub port: u16,
+}
+
 pub async fn connect(url: &str) -> Result<redis::aio::MultiplexedConnection, String> {
     let client = redis::Client::open(url).map_err(|e| format!("Redis connection failed: {e}"))?;
-    let mut con = tokio::time::timeout(super::connection_timeout(), client.get_multiplexed_async_connection())
-        .await
-        .map_err(|_| format!("Redis connection timed out ({}s)", super::CONNECTION_TIMEOUT_SECS))?
-        .map_err(|e| format!("Redis connection failed: {e}"))?;
-
-    tokio::time::timeout(super::connection_timeout(), redis::cmd("PING").query_async::<String>(&mut con))
-        .await
-        .map_err(|_| format!("Redis ping timed out ({}s)", super::CONNECTION_TIMEOUT_SECS))?
-        .map_err(|e| format!("Redis authentication failed or command rejected: {e}"))?;
-
-    Ok(con)
+    connect_client(client).await
 }
 
 pub async fn connect_sentinel(config: &ConnectionConfig) -> Result<redis::aio::MultiplexedConnection, String> {
@@ -96,17 +112,35 @@ pub async fn connect_sentinel(config: &ConnectionConfig) -> Result<redis::aio::M
     .map_err(|_| format!("Redis Sentinel lookup timed out ({}s)", super::CONNECTION_TIMEOUT_SECS))?
     .map_err(|e| format!("Redis Sentinel master lookup failed: {e}"))?;
 
-    let mut con = tokio::time::timeout(super::connection_timeout(), client.get_multiplexed_async_connection())
+    connect_client(client).await
+}
+
+pub async fn connect_cluster(config: &ConnectionConfig) -> Result<RedisClusterPool, String> {
+    let seed_nodes = redis_cluster_seed_nodes(config)?;
+    let cluster_nodes: Vec<ConnectionInfo> = seed_nodes
+        .iter()
+        .map(|endpoint| {
+            connection_info(&endpoint.host, endpoint.port, config.ssl, &config.username, &config.password, 0)
+        })
+        .collect();
+    let client = ClusterClient::new(cluster_nodes).map_err(|e| format!("Redis cluster connection failed: {e}"))?;
+    let mut con = tokio::time::timeout(super::connection_timeout(), client.get_async_connection())
         .await
-        .map_err(|_| format!("Redis connection timed out ({}s)", super::CONNECTION_TIMEOUT_SECS))?
-        .map_err(|e| format!("Redis connection failed: {e}"))?;
+        .map_err(|_| format!("Redis cluster connection timed out ({}s)", super::CONNECTION_TIMEOUT_SECS))?
+        .map_err(|e| format!("Redis cluster connection failed: {e}"))?;
 
     tokio::time::timeout(super::connection_timeout(), redis::cmd("PING").query_async::<String>(&mut con))
         .await
-        .map_err(|_| format!("Redis ping timed out ({}s)", super::CONNECTION_TIMEOUT_SECS))?
-        .map_err(|e| format!("Redis authentication failed or command rejected: {e}"))?;
+        .map_err(|_| format!("Redis cluster ping timed out ({}s)", super::CONNECTION_TIMEOUT_SECS))?
+        .map_err(|e| format!("Redis cluster authentication failed or command rejected: {e}"))?;
 
-    Ok(con)
+    Ok(RedisClusterPool {
+        connection: Mutex::new(con),
+        seed_nodes,
+        tls: config.ssl,
+        username: config.username.clone(),
+        password: config.password.clone(),
+    })
 }
 
 fn redis_sentinel_nodes(config: &ConnectionConfig) -> Result<Vec<ConnectionInfo>, String> {
@@ -129,6 +163,16 @@ fn redis_sentinel_nodes(config: &ConnectionConfig) -> Result<Vec<ConnectionInfo>
     endpoints.iter().map(|endpoint| redis_sentinel_node_connection_info(config, endpoint)).collect()
 }
 
+fn redis_cluster_seed_nodes(config: &ConnectionConfig) -> Result<Vec<RedisNodeEndpoint>, String> {
+    redis_node_endpoints(
+        config.redis_cluster_nodes.trim(),
+        config.host.trim(),
+        config.port,
+        "Redis cluster seed node",
+        6379,
+    )
+}
+
 fn redis_sentinel_node_connection_info(config: &ConnectionConfig, endpoint: &str) -> Result<ConnectionInfo, String> {
     let (host, port) = parse_redis_endpoint(endpoint, 26379)?;
     Ok(connection_info(
@@ -139,6 +183,37 @@ fn redis_sentinel_node_connection_info(config: &ConnectionConfig, endpoint: &str
         &config.redis_sentinel_password,
         0,
     ))
+}
+
+fn redis_node_endpoints(
+    raw_nodes: &str,
+    fallback_host: &str,
+    fallback_port: u16,
+    label: &str,
+    default_port: u16,
+) -> Result<Vec<RedisNodeEndpoint>, String> {
+    let endpoints: Vec<String> = if raw_nodes.is_empty() {
+        vec![format!("{fallback_host}:{}", if fallback_port == 0 { default_port } else { fallback_port })]
+    } else {
+        raw_nodes
+            .split(|ch: char| ch == ',' || ch == ';' || ch == '\n' || ch == '\r')
+            .map(str::trim)
+            .filter(|node| !node.is_empty())
+            .map(ToOwned::to_owned)
+            .collect()
+    };
+
+    if endpoints.is_empty() {
+        return Err(format!("At least one {label} is required"));
+    }
+
+    endpoints
+        .iter()
+        .map(|endpoint| {
+            let (host, port) = parse_redis_endpoint(endpoint, default_port)?;
+            Ok(RedisNodeEndpoint { host, port })
+        })
+        .collect()
 }
 
 fn connection_info(host: &str, port: u16, tls: bool, username: &str, password: &str, db: i64) -> ConnectionInfo {
@@ -171,7 +246,7 @@ fn non_empty_string(value: &str) -> Option<String> {
 fn parse_redis_endpoint(endpoint: &str, default_port: u16) -> Result<(String, u16), String> {
     let endpoint = endpoint.trim();
     if endpoint.is_empty() {
-        return Err("Redis Sentinel node cannot be empty".to_string());
+        return Err("Redis node cannot be empty".to_string());
     }
     let endpoint = endpoint.strip_prefix("redis://").or_else(|| endpoint.strip_prefix("rediss://")).unwrap_or(endpoint);
     let endpoint = endpoint.rsplit_once('@').map(|(_, tail)| tail).unwrap_or(endpoint);
@@ -179,7 +254,7 @@ fn parse_redis_endpoint(endpoint: &str, default_port: u16) -> Result<(String, u1
 
     if let Some(rest) = endpoint.strip_prefix('[') {
         let Some((host, tail)) = rest.split_once(']') else {
-            return Err(format!("Invalid Redis Sentinel node '{endpoint}'"));
+            return Err(format!("Invalid Redis node '{endpoint}'"));
         };
         let port = tail.strip_prefix(':').filter(|value| !value.is_empty()).map(parse_redis_port).transpose()?;
         return Ok((host.to_string(), port.unwrap_or(default_port)));
@@ -195,10 +270,38 @@ fn parse_redis_endpoint(endpoint: &str, default_port: u16) -> Result<(String, u1
 }
 
 fn parse_redis_port(port: &str) -> Result<u16, String> {
-    port.parse::<u16>().map_err(|_| format!("Invalid Redis Sentinel port '{port}'"))
+    port.parse::<u16>().map_err(|_| format!("Invalid Redis port '{port}'"))
 }
 
-pub async fn list_databases(con: &mut redis::aio::MultiplexedConnection) -> Result<Vec<RedisDatabaseInfo>, String> {
+async fn connect_client(client: redis::Client) -> Result<redis::aio::MultiplexedConnection, String> {
+    let mut con = tokio::time::timeout(super::connection_timeout(), client.get_multiplexed_async_connection())
+        .await
+        .map_err(|_| format!("Redis connection timed out ({}s)", super::CONNECTION_TIMEOUT_SECS))?
+        .map_err(|e| format!("Redis connection failed: {e}"))?;
+
+    tokio::time::timeout(super::connection_timeout(), redis::cmd("PING").query_async::<String>(&mut con))
+        .await
+        .map_err(|_| format!("Redis ping timed out ({}s)", super::CONNECTION_TIMEOUT_SECS))?
+        .map_err(|e| format!("Redis authentication failed or command rejected: {e}"))?;
+
+    Ok(con)
+}
+
+pub async fn connect_direct_node(
+    endpoint: &RedisNodeEndpoint,
+    tls: bool,
+    username: &str,
+    password: &str,
+) -> Result<redis::aio::MultiplexedConnection, String> {
+    let client = redis::Client::open(connection_info(&endpoint.host, endpoint.port, tls, username, password, 0))
+        .map_err(|e| format!("Redis connection failed: {e}"))?;
+    connect_client(client).await
+}
+
+pub async fn list_databases<C>(con: &mut C) -> Result<Vec<RedisDatabaseInfo>, String>
+where
+    C: ConnectionLike + Send + Sync + Unpin,
+{
     let configured_count =
         redis::cmd("CONFIG").arg("GET").arg("databases").query_async(con).await.ok().and_then(parse_database_count);
 
@@ -230,9 +333,10 @@ fn parse_database_count(value: redis::Value) -> Option<u32> {
     })
 }
 
-async fn list_keyspace_databases(
-    con: &mut redis::aio::MultiplexedConnection,
-) -> Result<Vec<RedisDatabaseInfo>, String> {
+async fn list_keyspace_databases<C>(con: &mut C) -> Result<Vec<RedisDatabaseInfo>, String>
+where
+    C: ConnectionLike + Send + Sync + Unpin,
+{
     let info: String = redis::cmd("INFO").arg("keyspace").query_async(con).await.map_err(|e| e.to_string())?;
 
     let mut dbs = Vec::new();
@@ -254,8 +358,233 @@ async fn list_keyspace_databases(
     Ok(dbs)
 }
 
-pub async fn select_db(con: &mut redis::aio::MultiplexedConnection, db: u32) -> Result<(), String> {
+pub async fn select_db<C>(con: &mut C, db: u32) -> Result<(), String>
+where
+    C: ConnectionLike + Send + Sync + Unpin,
+{
     redis::cmd("SELECT").arg(db).query_async(con).await.map_err(|e| e.to_string())
+}
+
+pub fn ensure_cluster_db(db: u32) -> Result<(), String> {
+    if db == 0 {
+        Ok(())
+    } else {
+        Err("Redis Cluster only supports db0".to_string())
+    }
+}
+
+pub fn encode_cluster_cursor(node_index: usize, cursor: u64) -> Result<u64, String> {
+    if node_index > CLUSTER_CURSOR_NODE_MASK as usize {
+        return Err("Redis cluster cursor exceeded node limit".to_string());
+    }
+    if cursor > CLUSTER_CURSOR_SCAN_MASK {
+        return Err("Redis cluster cursor exceeded scan limit".to_string());
+    }
+    Ok(((node_index as u64) << (64 - CLUSTER_CURSOR_NODE_BITS)) | (cursor & CLUSTER_CURSOR_SCAN_MASK))
+}
+
+pub fn decode_cluster_cursor(cursor: u64) -> (usize, u64) {
+    if cursor == 0 {
+        return (0, 0);
+    }
+    let node_index = (cursor >> (64 - CLUSTER_CURSOR_NODE_BITS)) as usize;
+    let node_cursor = cursor & CLUSTER_CURSOR_SCAN_MASK;
+    (node_index, node_cursor)
+}
+
+pub async fn list_cluster_databases(pool: &RedisClusterPool) -> Result<Vec<RedisDatabaseInfo>, String> {
+    let master_nodes = cluster_master_nodes(pool).await?;
+    let keys = cluster_total_keys(pool, &master_nodes).await;
+    Ok(vec![RedisDatabaseInfo { db: 0, keys }])
+}
+
+pub async fn scan_cluster_keys_page(
+    pool: &RedisClusterPool,
+    cursor: u64,
+    pattern: &str,
+    count: usize,
+) -> Result<RedisScanResult, String> {
+    let master_nodes = cluster_master_nodes(pool).await?;
+    if master_nodes.is_empty() {
+        return Ok(RedisScanResult { cursor: 0, keys: Vec::new(), total_keys: 0 });
+    }
+
+    let (mut node_index, node_cursor) = decode_cluster_cursor(cursor);
+    if node_index >= master_nodes.len() {
+        node_index = 0;
+    }
+
+    let total_keys = cluster_total_keys(pool, &master_nodes).await;
+    for index in node_index..master_nodes.len() {
+        let endpoint = &master_nodes[index];
+        let mut con = connect_direct_node(endpoint, pool.tls, &pool.username, &pool.password).await?;
+        let current_cursor = if index == node_index { node_cursor } else { 0 };
+        let result = scan_keys_page(&mut con, current_cursor, pattern, count).await?;
+        if !result.keys.is_empty() {
+            let next_cursor = if result.cursor != 0 {
+                encode_cluster_cursor(index, result.cursor)?
+            } else if index + 1 < master_nodes.len() {
+                encode_cluster_cursor(index + 1, 0)?
+            } else {
+                0
+            };
+            return Ok(RedisScanResult { cursor: next_cursor, keys: result.keys, total_keys });
+        }
+        if result.cursor != 0 {
+            return Ok(RedisScanResult {
+                cursor: encode_cluster_cursor(index, result.cursor)?,
+                keys: Vec::new(),
+                total_keys,
+            });
+        }
+    }
+
+    Ok(RedisScanResult { cursor: 0, keys: Vec::new(), total_keys })
+}
+
+pub async fn scan_cluster_values_page(
+    pool: &RedisClusterPool,
+    cursor: u64,
+    pattern: &str,
+    query: &str,
+    count: usize,
+) -> Result<RedisScanResult, String> {
+    let master_nodes = cluster_master_nodes(pool).await?;
+    if master_nodes.is_empty() {
+        return Ok(RedisScanResult { cursor: 0, keys: Vec::new(), total_keys: 0 });
+    }
+
+    let (mut node_index, node_cursor) = decode_cluster_cursor(cursor);
+    if node_index >= master_nodes.len() {
+        node_index = 0;
+    }
+
+    let total_keys = cluster_total_keys(pool, &master_nodes).await;
+    for index in node_index..master_nodes.len() {
+        let endpoint = &master_nodes[index];
+        let mut con = connect_direct_node(endpoint, pool.tls, &pool.username, &pool.password).await?;
+        let current_cursor = if index == node_index { node_cursor } else { 0 };
+        let result = scan_values_page(&mut con, current_cursor, pattern, query, count).await?;
+        if !result.keys.is_empty() {
+            let next_cursor = if result.cursor != 0 {
+                encode_cluster_cursor(index, result.cursor)?
+            } else if index + 1 < master_nodes.len() {
+                encode_cluster_cursor(index + 1, 0)?
+            } else {
+                0
+            };
+            return Ok(RedisScanResult { cursor: next_cursor, keys: result.keys, total_keys });
+        }
+        if result.cursor != 0 {
+            return Ok(RedisScanResult {
+                cursor: encode_cluster_cursor(index, result.cursor)?,
+                keys: Vec::new(),
+                total_keys,
+            });
+        }
+    }
+
+    Ok(RedisScanResult { cursor: 0, keys: Vec::new(), total_keys })
+}
+
+pub async fn cluster_master_nodes(pool: &RedisClusterPool) -> Result<Vec<RedisNodeEndpoint>, String> {
+    cluster_master_nodes_from_seeds(&pool.seed_nodes, pool.tls, &pool.username, &pool.password).await
+}
+
+pub async fn flush_cluster(pool: &RedisClusterPool) -> Result<(), String> {
+    let master_nodes = cluster_master_nodes(pool).await?;
+    for endpoint in master_nodes {
+        let mut con = connect_direct_node(&endpoint, pool.tls, &pool.username, &pool.password).await?;
+        flush_db(&mut con).await?;
+    }
+    Ok(())
+}
+
+async fn cluster_total_keys(pool: &RedisClusterPool, master_nodes: &[RedisNodeEndpoint]) -> u64 {
+    let mut total = 0;
+    for endpoint in master_nodes {
+        let Ok(mut con) = connect_direct_node(endpoint, pool.tls, &pool.username, &pool.password).await else {
+            continue;
+        };
+        total += redis::cmd("DBSIZE").query_async::<u64>(&mut con).await.unwrap_or(0);
+    }
+    total
+}
+
+async fn cluster_master_nodes_from_seeds(
+    seed_nodes: &[RedisNodeEndpoint],
+    tls: bool,
+    username: &str,
+    password: &str,
+) -> Result<Vec<RedisNodeEndpoint>, String> {
+    let mut last_error = None;
+    for endpoint in seed_nodes {
+        let mut con = match connect_direct_node(endpoint, tls, username, password).await {
+            Ok(con) => con,
+            Err(err) => {
+                last_error = Some(err);
+                continue;
+            }
+        };
+        let raw: RedisRawValue = match redis::cmd("CLUSTER").arg("SLOTS").query_async(&mut con).await {
+            Ok(raw) => raw,
+            Err(err) => {
+                last_error = Some(err.to_string());
+                continue;
+            }
+        };
+        let nodes = parse_cluster_slots(raw, &endpoint.host)?;
+        if !nodes.is_empty() {
+            return Ok(nodes);
+        }
+    }
+
+    Err(last_error.unwrap_or_else(|| "Redis cluster master discovery failed".to_string()))
+}
+
+fn parse_cluster_slots(raw: RedisRawValue, fallback_host: &str) -> Result<Vec<RedisNodeEndpoint>, String> {
+    let RedisRawValue::Array(slots) = raw else {
+        return Err("Invalid Redis CLUSTER SLOTS response".to_string());
+    };
+
+    let mut seen = std::collections::HashSet::new();
+    let mut nodes = Vec::new();
+    for slot in slots {
+        let RedisRawValue::Array(parts) = slot else {
+            continue;
+        };
+        if parts.len() < 3 {
+            continue;
+        }
+        let Some(endpoint) = parse_cluster_slot_master(parts[2].clone(), fallback_host)? else {
+            continue;
+        };
+        if seen.insert((endpoint.host.clone(), endpoint.port)) {
+            nodes.push(endpoint);
+        }
+    }
+    Ok(nodes)
+}
+
+fn parse_cluster_slot_master(value: RedisRawValue, fallback_host: &str) -> Result<Option<RedisNodeEndpoint>, String> {
+    let RedisRawValue::Array(parts) = value else {
+        return Ok(None);
+    };
+    if parts.len() < 2 {
+        return Ok(None);
+    }
+    let host = match &parts[0] {
+        RedisRawValue::Nil => fallback_host.to_string(),
+        other => redis_value_to_string(other.clone()).unwrap_or_else(|| fallback_host.to_string()),
+    };
+    if host.trim().is_empty() {
+        return Ok(None);
+    }
+    let Some(port_text) = redis_value_to_string(parts[1].clone()) else {
+        return Err("Invalid Redis cluster node port".to_string());
+    };
+    let port = parse_redis_port(&port_text)?;
+    Ok(Some(RedisNodeEndpoint { host, port }))
 }
 
 pub fn parse_command_argv(command_text: &str) -> Result<Vec<String>, String> {
@@ -414,14 +743,17 @@ pub fn redis_key_value_preview(key_type: &str) -> String {
     }
 }
 
-pub async fn flush_db(con: &mut redis::aio::MultiplexedConnection) -> Result<(), String> {
+pub async fn flush_db<C>(con: &mut C) -> Result<(), String>
+where
+    C: ConnectionLike + Send + Sync + Unpin,
+{
     redis::cmd("FLUSHDB").query_async::<()>(con).await.map_err(|e| e.to_string())
 }
 
-pub async fn execute_command(
-    con: &mut redis::aio::MultiplexedConnection,
-    command_text: &str,
-) -> Result<RedisCommandResult, String> {
+pub async fn execute_command<C>(con: &mut C, command_text: &str) -> Result<RedisCommandResult, String>
+where
+    C: ConnectionLike + Send + Sync + Unpin,
+{
     let argv = parse_command_argv(command_text)?;
     let command = argv[0].to_ascii_uppercase();
     let safety = classify_command(&command);
@@ -438,12 +770,10 @@ pub async fn execute_command(
     Ok(RedisCommandResult { command, safety, value: redis_command_raw_to_json(raw) })
 }
 
-pub async fn scan_keys_page(
-    con: &mut redis::aio::MultiplexedConnection,
-    cursor: u64,
-    pattern: &str,
-    count: usize,
-) -> Result<RedisScanResult, String> {
+pub async fn scan_keys_page<C>(con: &mut C, cursor: u64, pattern: &str, count: usize) -> Result<RedisScanResult, String>
+where
+    C: ConnectionLike + Send + Sync + Unpin,
+{
     let raw: RedisRawValue = redis::cmd("SCAN")
         .arg(cursor)
         .arg("MATCH")
@@ -481,13 +811,16 @@ pub async fn scan_keys_page(
     Ok(RedisScanResult { cursor: next_cursor, keys: result, total_keys })
 }
 
-pub async fn scan_values_page(
-    con: &mut redis::aio::MultiplexedConnection,
+pub async fn scan_values_page<C>(
+    con: &mut C,
     cursor: u64,
     pattern: &str,
     query: &str,
     count: usize,
-) -> Result<RedisScanResult, String> {
+) -> Result<RedisScanResult, String>
+where
+    C: ConnectionLike + Send + Sync + Unpin,
+{
     let total_keys: u64 = redis::cmd("DBSIZE").query_async(con).await.unwrap_or(0);
     if query.trim().is_empty() {
         return Ok(RedisScanResult { cursor, keys: Vec::new(), total_keys });
@@ -528,7 +861,10 @@ pub async fn scan_values_page(
     Ok(RedisScanResult { cursor: next_cursor, keys: result, total_keys })
 }
 
-pub async fn get_value(con: &mut redis::aio::MultiplexedConnection, key: &[u8]) -> Result<RedisValue, String> {
+pub async fn get_value<C>(con: &mut C, key: &[u8]) -> Result<RedisValue, String>
+where
+    C: ConnectionLike + Send + Sync + Unpin,
+{
     let key_type: String = redis::cmd("TYPE").arg(key).query_async(con).await.map_err(|e| e.to_string())?;
 
     let ttl: i64 = redis::cmd("TTL").arg(key).query_async(con).await.unwrap_or(-1);
@@ -622,10 +958,10 @@ fn redis_search_value_size(value: &serde_json::Value, total: Option<u64>) -> u64
     }
 }
 
-async fn get_stream_entries(
-    con: &mut redis::aio::MultiplexedConnection,
-    key: &[u8],
-) -> Result<serde_json::Value, String> {
+async fn get_stream_entries<C>(con: &mut C, key: &[u8]) -> Result<serde_json::Value, String>
+where
+    C: ConnectionLike + Send + Sync + Unpin,
+{
     let raw: RedisRawValue = redis::cmd("XRANGE")
         .arg(key)
         .arg("-")
@@ -780,12 +1116,10 @@ pub fn redis_key_raw_to_bytes(value: &str) -> Result<Vec<u8>, String> {
     base64::engine::general_purpose::STANDARD.decode(value).map_err(|e| format!("Invalid Redis key encoding: {e}"))
 }
 
-pub async fn set_string(
-    con: &mut redis::aio::MultiplexedConnection,
-    key: &[u8],
-    value: &str,
-    ttl: Option<i64>,
-) -> Result<(), String> {
+pub async fn set_string<C>(con: &mut C, key: &[u8], value: &str, ttl: Option<i64>) -> Result<(), String>
+where
+    C: ConnectionLike + Send + Sync + Unpin,
+{
     redis::cmd("SET").arg(key).arg(value).query_async::<()>(con).await.map_err(|e| e.to_string())?;
     if let Some(t) = ttl {
         if t > 0 {
@@ -795,64 +1129,82 @@ pub async fn set_string(
     Ok(())
 }
 
-pub async fn delete_key(con: &mut redis::aio::MultiplexedConnection, key: &[u8]) -> Result<(), String> {
+pub async fn delete_key<C>(con: &mut C, key: &[u8]) -> Result<(), String>
+where
+    C: ConnectionLike + Send + Sync + Unpin,
+{
     redis::cmd("DEL").arg(key).query_async::<()>(con).await.map_err(|e| e.to_string())
 }
 
-pub async fn hash_set(
-    con: &mut redis::aio::MultiplexedConnection,
-    key: &[u8],
-    field: &str,
-    value: &str,
-) -> Result<(), String> {
+pub async fn hash_set<C>(con: &mut C, key: &[u8], field: &str, value: &str) -> Result<(), String>
+where
+    C: ConnectionLike + Send + Sync + Unpin,
+{
     redis::cmd("HSET").arg(key).arg(field).arg(value).query_async::<()>(con).await.map_err(|e| e.to_string())
 }
 
-pub async fn hash_del(con: &mut redis::aio::MultiplexedConnection, key: &[u8], field: &str) -> Result<(), String> {
+pub async fn hash_del<C>(con: &mut C, key: &[u8], field: &str) -> Result<(), String>
+where
+    C: ConnectionLike + Send + Sync + Unpin,
+{
     redis::cmd("HDEL").arg(key).arg(field).query_async::<()>(con).await.map_err(|e| e.to_string())
 }
 
-pub async fn list_push(con: &mut redis::aio::MultiplexedConnection, key: &[u8], value: &str) -> Result<(), String> {
+pub async fn list_push<C>(con: &mut C, key: &[u8], value: &str) -> Result<(), String>
+where
+    C: ConnectionLike + Send + Sync + Unpin,
+{
     redis::cmd("RPUSH").arg(key).arg(value).query_async::<()>(con).await.map_err(|e| e.to_string())
 }
 
-pub async fn list_set(
-    con: &mut redis::aio::MultiplexedConnection,
-    key: &[u8],
-    index: i64,
-    value: &str,
-) -> Result<(), String> {
+pub async fn list_set<C>(con: &mut C, key: &[u8], index: i64, value: &str) -> Result<(), String>
+where
+    C: ConnectionLike + Send + Sync + Unpin,
+{
     redis::cmd("LSET").arg(key).arg(index).arg(value).query_async::<()>(con).await.map_err(|e| e.to_string())
 }
 
-pub async fn list_remove(con: &mut redis::aio::MultiplexedConnection, key: &[u8], index: i64) -> Result<(), String> {
+pub async fn list_remove<C>(con: &mut C, key: &[u8], index: i64) -> Result<(), String>
+where
+    C: ConnectionLike + Send + Sync + Unpin,
+{
     let placeholder = "__DELETED_PLACEHOLDER__";
     redis::cmd("LSET").arg(key).arg(index).arg(placeholder).query_async::<()>(con).await.map_err(|e| e.to_string())?;
     redis::cmd("LREM").arg(key).arg(1).arg(placeholder).query_async::<()>(con).await.map_err(|e| e.to_string())
 }
 
-pub async fn set_add(con: &mut redis::aio::MultiplexedConnection, key: &[u8], member: &str) -> Result<(), String> {
+pub async fn set_add<C>(con: &mut C, key: &[u8], member: &str) -> Result<(), String>
+where
+    C: ConnectionLike + Send + Sync + Unpin,
+{
     redis::cmd("SADD").arg(key).arg(member).query_async::<()>(con).await.map_err(|e| e.to_string())
 }
 
-pub async fn set_remove(con: &mut redis::aio::MultiplexedConnection, key: &[u8], member: &str) -> Result<(), String> {
+pub async fn set_remove<C>(con: &mut C, key: &[u8], member: &str) -> Result<(), String>
+where
+    C: ConnectionLike + Send + Sync + Unpin,
+{
     redis::cmd("SREM").arg(key).arg(member).query_async::<()>(con).await.map_err(|e| e.to_string())
 }
 
-pub async fn zadd(
-    con: &mut redis::aio::MultiplexedConnection,
-    key: &[u8],
-    member: &str,
-    score: f64,
-) -> Result<(), String> {
+pub async fn zadd<C>(con: &mut C, key: &[u8], member: &str, score: f64) -> Result<(), String>
+where
+    C: ConnectionLike + Send + Sync + Unpin,
+{
     redis::cmd("ZADD").arg(key).arg(score).arg(member).query_async::<()>(con).await.map_err(|e| e.to_string())
 }
 
-pub async fn zrem(con: &mut redis::aio::MultiplexedConnection, key: &[u8], member: &str) -> Result<(), String> {
+pub async fn zrem<C>(con: &mut C, key: &[u8], member: &str) -> Result<(), String>
+where
+    C: ConnectionLike + Send + Sync + Unpin,
+{
     redis::cmd("ZREM").arg(key).arg(member).query_async::<()>(con).await.map_err(|e| e.to_string())
 }
 
-pub async fn set_ttl(con: &mut redis::aio::MultiplexedConnection, key: &[u8], ttl: i64) -> Result<(), String> {
+pub async fn set_ttl<C>(con: &mut C, key: &[u8], ttl: i64) -> Result<(), String>
+where
+    C: ConnectionLike + Send + Sync + Unpin,
+{
     if ttl > 0 {
         redis::cmd("EXPIRE").arg(key).arg(ttl).query_async::<()>(con).await.map_err(|e| e.to_string())
     } else {
@@ -860,7 +1212,10 @@ pub async fn set_ttl(con: &mut redis::aio::MultiplexedConnection, key: &[u8], tt
     }
 }
 
-pub async fn delete_keys(con: &mut redis::aio::MultiplexedConnection, keys: &[Vec<u8>]) -> Result<u64, String> {
+pub async fn delete_keys<C>(con: &mut C, keys: &[Vec<u8>]) -> Result<u64, String>
+where
+    C: ConnectionLike + Send + Sync + Unpin,
+{
     let mut cmd = redis::cmd("DEL");
     for key in keys {
         cmd.arg(key.as_slice());
@@ -868,13 +1223,16 @@ pub async fn delete_keys(con: &mut redis::aio::MultiplexedConnection, keys: &[Ve
     cmd.query_async(con).await.map_err(|e| e.to_string())
 }
 
-pub async fn load_more_collection(
-    con: &mut redis::aio::MultiplexedConnection,
+pub async fn load_more_collection<C>(
+    con: &mut C,
     key: &[u8],
     key_type: &str,
     cursor: u64,
     count: usize,
-) -> Result<RedisValue, String> {
+) -> Result<RedisValue, String>
+where
+    C: ConnectionLike + Send + Sync + Unpin,
+{
     let (value, next_cursor) = match key_type {
         "list" => {
             let start = cursor as i64;
@@ -916,12 +1274,15 @@ pub async fn load_more_collection(
     })
 }
 
-async fn hscan_page_raw(
-    con: &mut redis::aio::MultiplexedConnection,
+async fn hscan_page_raw<C>(
+    con: &mut C,
     key: &[u8],
     cursor: u64,
     count: usize,
-) -> Result<(u64, Vec<serde_json::Value>), String> {
+) -> Result<(u64, Vec<serde_json::Value>), String>
+where
+    C: ConnectionLike + Send + Sync + Unpin,
+{
     let raw: RedisRawValue = redis::cmd("HSCAN")
         .arg(key)
         .arg(cursor)
@@ -933,12 +1294,15 @@ async fn hscan_page_raw(
     parse_scan_pairs(raw, "hash")
 }
 
-async fn sscan_page_raw(
-    con: &mut redis::aio::MultiplexedConnection,
+async fn sscan_page_raw<C>(
+    con: &mut C,
     key: &[u8],
     cursor: u64,
     count: usize,
-) -> Result<(u64, Vec<serde_json::Value>), String> {
+) -> Result<(u64, Vec<serde_json::Value>), String>
+where
+    C: ConnectionLike + Send + Sync + Unpin,
+{
     let raw: RedisRawValue = redis::cmd("SSCAN")
         .arg(key)
         .arg(cursor)
@@ -950,12 +1314,15 @@ async fn sscan_page_raw(
     parse_scan_members(raw)
 }
 
-async fn zscan_page_raw(
-    con: &mut redis::aio::MultiplexedConnection,
+async fn zscan_page_raw<C>(
+    con: &mut C,
     key: &[u8],
     cursor: u64,
     count: usize,
-) -> Result<(u64, Vec<serde_json::Value>), String> {
+) -> Result<(u64, Vec<serde_json::Value>), String>
+where
+    C: ConnectionLike + Send + Sync + Unpin,
+{
     let raw: RedisRawValue = redis::cmd("ZSCAN")
         .arg(key)
         .arg(cursor)
@@ -1026,11 +1393,11 @@ fn parse_scan_members(raw: RedisRawValue) -> Result<(u64, Vec<serde_json::Value>
 #[cfg(test)]
 mod tests {
     use super::{
-        classify_command, is_redis_json_type, parse_command_argv, parse_database_count, parse_redis_endpoint,
-        parse_scan_keys, parse_stream_entries, redis_command_raw_to_json, redis_json_raw_to_json,
-        redis_json_value_preview, redis_key_bytes_to_display, redis_key_bytes_to_raw, redis_key_raw_to_bytes,
-        redis_key_value_preview, redis_raw_to_json, redis_value_contains_binary, redis_value_matches_query,
-        RedisCommandSafety, RedisRawValue,
+        classify_command, decode_cluster_cursor, encode_cluster_cursor, is_redis_json_type, parse_cluster_slots,
+        parse_command_argv, parse_database_count, parse_redis_endpoint, parse_scan_keys, parse_stream_entries,
+        redis_command_raw_to_json, redis_json_raw_to_json, redis_json_value_preview, redis_key_bytes_to_display,
+        redis_key_bytes_to_raw, redis_key_raw_to_bytes, redis_key_value_preview, redis_raw_to_json,
+        redis_value_contains_binary, redis_value_matches_query, RedisCommandSafety, RedisNodeEndpoint, RedisRawValue,
     };
 
     fn bulk(value: &str) -> RedisRawValue {
@@ -1207,6 +1574,46 @@ mod tests {
         assert_eq!(parse_redis_endpoint("sentinel.local", 26379).unwrap(), ("sentinel.local".to_string(), 26379));
         assert_eq!(parse_redis_endpoint("[::1]:26380", 26379).unwrap(), ("::1".to_string(), 26380));
         assert_eq!(parse_redis_endpoint("::1", 26379).unwrap(), ("::1".to_string(), 26379));
+    }
+
+    #[test]
+    fn encodes_and_decodes_cluster_scan_cursor() {
+        let encoded = encode_cluster_cursor(12, 3456).unwrap();
+
+        assert_eq!(decode_cluster_cursor(encoded), (12, 3456));
+        assert_eq!(decode_cluster_cursor(0), (0, 0));
+    }
+
+    #[test]
+    fn parses_cluster_slots_master_nodes() {
+        let raw = RedisRawValue::Array(vec![
+            RedisRawValue::Array(vec![
+                RedisRawValue::Int(0),
+                RedisRawValue::Int(5460),
+                RedisRawValue::Array(vec![
+                    RedisRawValue::BulkString(b"10.0.0.1".to_vec()),
+                    RedisRawValue::Int(7000),
+                    RedisRawValue::BulkString(b"node-a".to_vec()),
+                ]),
+            ]),
+            RedisRawValue::Array(vec![
+                RedisRawValue::Int(5461),
+                RedisRawValue::Int(10922),
+                RedisRawValue::Array(vec![
+                    RedisRawValue::BulkString(b"10.0.0.2".to_vec()),
+                    RedisRawValue::Int(7001),
+                    RedisRawValue::BulkString(b"node-b".to_vec()),
+                ]),
+            ]),
+        ]);
+
+        assert_eq!(
+            parse_cluster_slots(raw, "127.0.0.1").unwrap(),
+            vec![
+                RedisNodeEndpoint { host: "10.0.0.1".to_string(), port: 7000 },
+                RedisNodeEndpoint { host: "10.0.0.2".to_string(), port: 7001 },
+            ]
+        );
     }
 
     #[test]
