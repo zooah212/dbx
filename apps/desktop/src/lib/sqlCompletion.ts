@@ -915,13 +915,10 @@ export function getSqlCompletionContext(sql: string, cursor: number): SqlComplet
   const stmtStart = extractStatementStart(sql, cursor);
   const beforeCursor = sql.slice(stmtStart, cursor);
 
-  const dottedMatch = /([A-Za-z_][\w$]*)\.([A-Za-z_][\w$]*)?$/.exec(beforeCursor);
-  const plainMatch = /([A-Za-z_][\w$]*)$/.exec(beforeCursor);
-  const prefix = dottedMatch?.[2] ?? plainMatch?.[1] ?? "";
-  const qualifier = dottedMatch?.[1];
-  const bareStart = dottedMatch
-    ? beforeCursor.length - dottedMatch[0].length
-    : beforeCursor.length - (plainMatch?.[1]?.length ?? 0);
+  const trailingIdentifier = parseTrailingIdentifierContext(beforeCursor);
+  const prefix = trailingIdentifier?.prefix ?? "";
+  const qualifier = trailingIdentifier?.qualifier;
+  const bareStart = trailingIdentifier?.start ?? beforeCursor.length;
   const beforeToken = beforeCursor.slice(0, Math.max(0, bareStart)).trimEnd();
   const lastWord = /([A-Za-z_][\w$]*)$/.exec(beforeToken)?.[1]?.toLowerCase() ?? "";
 
@@ -994,6 +991,84 @@ export function getSqlCompletionContext(sql: string, cursor: number): SqlComplet
     comparisonLeftColumn: detectComparisonLeftColumn(beforeCursor),
     onStar: detectOnStar(beforeCursor),
   };
+}
+
+function parseTrailingIdentifierContext(input: string): { start: number; prefix: string; qualifier?: string } | null {
+  let i = input.length - 1;
+  while (i >= 0 && /\s/.test(input[i] ?? "")) i--;
+  if (i < 0) return null;
+
+  const endsWithDot = input[i] === ".";
+  const tail = input.slice(0, endsWithDot ? i : i + 1);
+  if (!tail) {
+    return endsWithDot ? { start: i, prefix: "" } : null;
+  }
+  const parts: string[] = [];
+  let index = tail.length;
+
+  while (index > 0) {
+    const parsed = parseTrailingIdentifierPart(tail, index);
+    if (!parsed) break;
+    parts.unshift(unquoteIdentifier(parsed.raw));
+    index = parsed.start;
+    if (index <= 0 || tail[index - 1] !== ".") break;
+    index -= 1;
+  }
+
+  if (parts.length === 0) return null;
+  const start = index;
+
+  if (parts.length >= 2 || endsWithDot) {
+    const qualifierParts = endsWithDot ? parts : parts.slice(0, -1);
+    const prefixPart = endsWithDot ? "" : (parts[parts.length - 1] ?? "");
+    const qualifierValue = qualifierParts.join(".");
+    return {
+      start,
+      prefix: prefixPart,
+      qualifier: qualifierValue || undefined,
+    };
+  }
+
+  return {
+    start,
+    prefix: parts[0] ?? "",
+  };
+}
+
+function parseTrailingIdentifierPart(input: string, endExclusive: number): { start: number; raw: string } | null {
+  if (endExclusive <= 0) return null;
+  const end = endExclusive - 1;
+  const tailChar = input[end];
+  if (!tailChar) return null;
+
+  if (tailChar === '"') {
+    let start = end - 1;
+    while (start >= 0) {
+      if (input[start] === '"') {
+        if (start > 0 && input[start - 1] === '"') {
+          start -= 2;
+          continue;
+        }
+        return { start, raw: input.slice(start, endExclusive) };
+      }
+      start -= 1;
+    }
+    return null;
+  }
+
+  if (tailChar === "`") {
+    const start = input.lastIndexOf("`", end - 1);
+    if (start < 0) return null;
+    return { start, raw: input.slice(start, endExclusive) };
+  }
+
+  let start = end;
+  while (start >= 0 && /[A-Za-z0-9_$]/.test(input[start] ?? "")) start -= 1;
+  start += 1;
+  if (start >= endExclusive) return null;
+  const raw = input.slice(start, endExclusive);
+  if (!/^[A-Za-z_][\w$]*$/.test(raw)) return null;
+  return { start, raw };
 }
 
 /**
