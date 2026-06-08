@@ -1976,6 +1976,12 @@ export default {
     usageAgentDrivers: "Built-in driver agents",
     usageJdbcPlugin: "JDBC plugin",
     usageJdbcDriverJars: "JDBC driver JARs",
+    offlineDownloadHint:
+      "For air-gapped environments, download offline driver packages on an internet-connected machine, then import them here.",
+    offlineDownloadLink: "Offline driver downloads",
+    searchDrivers: "Search driver name, type, version...",
+    searchJdbcDrivers: "Search JDBC driver name or path...",
+    noMatchingDrivers: "No matching drivers.",
     javaRuntimeSaved: "Java runtime settings saved",
     javaRuntimeSaveFailed: "Failed to save Java runtime settings: {error}",
     chooseJavaExecutable: "Choose Java executable",
