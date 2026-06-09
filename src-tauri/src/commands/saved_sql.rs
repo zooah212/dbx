@@ -95,12 +95,13 @@ pub async fn sync_saved_sql_directory(request: SavedSqlSyncRequest) -> Result<()
 }
 
 fn sync_saved_sql_directory_blocking(target_dir: &Path, entries: &[SavedSqlSyncEntry]) -> Result<(), String> {
-    std::fs::create_dir_all(target_dir).map_err(|e| e.to_string())?;
-    remove_previous_sync_files(target_dir)?;
+    let sync_root = target_dir.join("dbx-sql-library");
+    std::fs::create_dir_all(&sync_root).map_err(|e| e.to_string())?;
+    remove_previous_sync_files(&sync_root)?;
 
     let mut written_files = Vec::new();
     for entry in entries {
-        let mut file_dir = target_dir.to_path_buf();
+        let mut file_dir = sync_root.to_path_buf();
         if let Some(folder_name) = entry.folder_name.as_deref().map(str::trim).filter(|name| !name.is_empty()) {
             file_dir.push(sanitize_file_segment(folder_name));
         }
@@ -109,14 +110,14 @@ fn sync_saved_sql_directory_blocking(target_dir: &Path, entries: &[SavedSqlSyncE
         let file_name = ensure_sql_extension(&sanitize_file_segment(&entry.file_name));
         let file_path = unique_file_path(&file_dir, &file_name);
         std::fs::write(&file_path, &entry.sql).map_err(|e| e.to_string())?;
-        if let Ok(relative) = file_path.strip_prefix(target_dir) {
+        if let Ok(relative) = file_path.strip_prefix(&sync_root) {
             written_files.push(relative.to_string_lossy().replace('\\', "/"));
         }
     }
 
     let manifest = SavedSqlSyncManifest { files: written_files };
     let manifest_json = serde_json::to_string_pretty(&manifest).map_err(|e| e.to_string())?;
-    std::fs::write(target_dir.join(SYNC_MANIFEST_FILE), manifest_json).map_err(|e| e.to_string())?;
+    std::fs::write(sync_root.join(SYNC_MANIFEST_FILE), manifest_json).map_err(|e| e.to_string())?;
     Ok(())
 }
 

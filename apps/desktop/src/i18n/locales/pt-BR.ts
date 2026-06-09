@@ -122,6 +122,7 @@ export default {
     syncDirectoryDisabled: "Sincronização local de SQL desativada",
     syncDirectoryFailed: "Falha ao definir diretório de sincronização: {message}",
     openDirectoryFailed: "Falha ao abrir diretório: {message}",
+    noSyncDirectory: "Defina um diretório de sincronização local primeiro",
     exported: "Exportado",
     exportFailed: "Falha na exportação: {message}",
     importFailed: "Falha na importação: {message}",

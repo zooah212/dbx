@@ -313,8 +313,13 @@ async function openSqlStorageDirectory() {
     return;
   }
 
+  const syncDir = settingsStore.desktopSettings.saved_sql_sync_dir?.trim();
+  if (!syncDir) {
+    toast(t("sqlLibrary.noSyncDirectory"), 3000);
+    return;
+  }
   try {
-    await api.openSavedSqlStorageDir(settingsStore.desktopSettings.saved_sql_sync_dir || undefined);
+    await api.openSavedSqlStorageDir(syncDir);
   } catch (e: any) {
     toast(t("sqlLibrary.openDirectoryFailed", { message: e?.message || String(e) }), 5000);
   }

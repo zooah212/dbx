@@ -122,6 +122,7 @@ export default {
     syncDirectoryDisabled: "SQL local sync disabled",
     syncDirectoryFailed: "Failed to set sync directory: {message}",
     openDirectoryFailed: "Failed to open directory: {message}",
+    noSyncDirectory: "Please set a local sync directory first",
     exported: "Exported",
     exportFailed: "Export failed: {message}",
     importFailed: "Import failed: {message}",

@@ -121,6 +121,7 @@ export default {
     syncDirectoryDisabled: "SQL 本地同步已关闭",
     syncDirectoryFailed: "设置同步目录失败：{message}",
     openDirectoryFailed: "打开目录失败：{message}",
+    noSyncDirectory: "请先设置本地同步目录",
     exported: "导出完成",
     exportedCount: "已导入 {count} 个 SQL 文件",
     exportFailed: "导出失败：{message}",

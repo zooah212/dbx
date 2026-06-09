@@ -121,6 +121,7 @@ export default {
     syncDirectoryDisabled: "SQL 本機同步已關閉",
     syncDirectoryFailed: "設定同步目錄失敗：{message}",
     openDirectoryFailed: "開啟目錄失敗：{message}",
+    noSyncDirectory: "請先設定本機同步目錄",
     exported: "匯出完成",
     exportFailed: "匯出失敗：{message}",
     importFailed: "匯入失敗：{message}",
