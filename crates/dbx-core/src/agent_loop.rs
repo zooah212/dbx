@@ -106,11 +106,15 @@ pub async fn run_agent_loop(
 
         let accumulated_text = accumulated_text.lock().await.clone();
 
-        // Add assistant message to conversation
+        // Add assistant message to conversation (including tool_use blocks)
         conversation_messages.push(AiMessage {
             role: "assistant".to_string(),
             content: accumulated_text.clone(),
             tool_call_id: None,
+            tool_calls: collected_tool_calls
+                .iter()
+                .map(|tc| ai::ToolCallRef { id: tc.id.clone(), name: tc.name.clone(), arguments: tc.arguments.clone() })
+                .collect(),
         });
 
         if collected_tool_calls.is_empty() {
@@ -150,6 +154,7 @@ pub async fn run_agent_loop(
                 role: "tool".to_string(),
                 content: result.content.clone(),
                 tool_call_id: Some(tc.id.clone()),
+                tool_calls: Vec::new(),
             });
         }
 
@@ -264,6 +269,22 @@ async fn call_openai_with_tools(
             if let Some(ref tc_id) = m.tool_call_id {
                 msg["tool_call_id"] = json!(tc_id);
             }
+        } else if m.role == "assistant" && !m.tool_calls.is_empty() {
+            let calls: Vec<serde_json::Value> = m
+                .tool_calls
+                .iter()
+                .map(|tc| {
+                    json!({
+                        "id": tc.id,
+                        "type": "function",
+                        "function": {
+                            "name": tc.name,
+                            "arguments": tc.arguments.to_string()
+                        }
+                    })
+                })
+                .collect();
+            msg["tool_calls"] = json!(calls);
         }
         msg
     }));
@@ -335,6 +356,27 @@ async fn call_claude_with_tools(
                     "tool_use_id": m.tool_call_id.as_deref().unwrap_or_default(),
                     "content": m.content
                 }]
+            }));
+        } else if m.role == "assistant" && !m.tool_calls.is_empty() {
+            // Reconstruct assistant message with tool_use content blocks
+            let mut content_blocks: Vec<serde_json::Value> = Vec::new();
+            if !m.content.is_empty() {
+                content_blocks.push(json!({
+                    "type": "text",
+                    "text": m.content
+                }));
+            }
+            for tc in &m.tool_calls {
+                content_blocks.push(json!({
+                    "type": "tool_use",
+                    "id": tc.id,
+                    "name": tc.name,
+                    "input": tc.arguments
+                }));
+            }
+            messages.push(json!({
+                "role": "assistant",
+                "content": content_blocks
             }));
         } else {
             messages.push(json!({ "role": m.role, "content": m.content }));
@@ -416,6 +458,23 @@ async fn call_gemini_with_tools(
                         "response": { "content": m.content }
                     }
                 }]
+            }));
+        } else if m.role == "assistant" && !m.tool_calls.is_empty() {
+            let mut parts: Vec<serde_json::Value> = Vec::new();
+            if !m.content.is_empty() {
+                parts.push(json!({ "text": m.content }));
+            }
+            for tc in &m.tool_calls {
+                parts.push(json!({
+                    "functionCall": {
+                        "name": tc.name,
+                        "args": tc.arguments
+                    }
+                }));
+            }
+            contents.push(json!({
+                "role": "model",
+                "parts": parts
             }));
         } else {
             let role = if m.role == "assistant" { "model" } else { "user" };

@@ -103,6 +103,22 @@ pub struct AiMessage {
     /// a tool result with its originating tool call in multi-turn loops.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
+    /// Tool calls made by the assistant (role="assistant"). Used to
+    /// reconstruct tool_use content blocks for providers like Anthropic
+    /// that require them in the conversation history.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_calls: Vec<ToolCallRef>,
+}
+
+/// A lightweight reference to a tool call within an assistant message.
+/// Stores the id, name, and arguments needed to reconstruct provider-specific
+/// tool_use content blocks (e.g. Anthropic's `{"type":"tool_use", ...}`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolCallRef {
+    pub id: String,
+    pub name: String,
+    pub arguments: serde_json::Value,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -684,7 +700,12 @@ pub async fn test_connection_core(config: &AiConfig) -> Result<String, String> {
     let request = AiCompletionRequest {
         config: config.clone(),
         system_prompt: String::new(),
-        messages: vec![AiMessage { role: "user".into(), content: "hi".into(), tool_call_id: None }],
+        messages: vec![AiMessage {
+            role: "user".into(),
+            content: "hi".into(),
+            tool_call_id: None,
+            tool_calls: Vec::new(),
+        }],
         max_tokens: Some(16),
         temperature: Some(0.0),
     };
