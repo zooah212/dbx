@@ -441,6 +441,22 @@ function completionMetadataTarget(table: { name: string; schema?: string | null 
   return { database: props.database, schema: table.schema ?? props.schema };
 }
 
+function completionQualifiedTableTarget(completionContext: ReturnType<typeof getSqlCompletionContext>): { name: string; schema: string } | null {
+  if (!completionContext.suggestColumns) return null;
+  const parts = completionContext.qualifierParts ?? completionContext.qualifier?.split(".").filter(Boolean) ?? [];
+  if (parts.length < 2) return null;
+  const name = parts[parts.length - 1];
+  const schema = parts[parts.length - 2];
+  if (!name || !schema) return null;
+  return { name, schema };
+}
+
+function completionTablesMatch(left: { name: string; schema?: string | null }, right: { name: string; schema?: string | null }) {
+  if (left.name.toLowerCase() !== right.name.toLowerCase()) return false;
+  if (!left.schema || !right.schema) return true;
+  return left.schema.toLowerCase() === right.schema.toLowerCase();
+}
+
 async function ensureColumnsForTable(table: { name: string; schema?: string | null }) {
   const cacheKey = completionCacheKey(table);
   if (cachedColumnsByTable.has(cacheKey) || !props.connectionId || props.database == null) return;
@@ -1047,6 +1063,21 @@ function buildLocalSqlCompletionResult(completionContext: ReturnType<typeof getS
     }
   }
 
+  const qualifiedColumnTarget = completionQualifiedTableTarget(completionContext);
+  if (qualifiedColumnTarget) {
+    const cacheKey = completionCacheKey(qualifiedColumnTarget);
+    const cached = cachedColumnsByTable.get(cacheKey);
+    if (cached) {
+      columnsByTable.set(cacheKey, cached);
+    } else {
+      const target = completionMetadataTarget(qualifiedColumnTarget);
+      const localColumns = target ? connectionStore.lookupLocalCompletionColumns(props.connectionId, target.database, qualifiedColumnTarget.name, target.schema) : [];
+      if (localColumns.length > 0) {
+        columnsByTable.set(cacheKey, localColumns);
+      }
+    }
+  }
+
   const cteDefs = extractCteDefinitions(fullDoc);
   for (const refTable of completionContext.referencedTables) {
     const cteDef = cteDefs.find((c) => c.name.toLowerCase() === refTable.name.toLowerCase());
@@ -1133,9 +1164,23 @@ function scheduleCompletionMetadataRefresh(completionContext: ReturnType<typeof 
       })
       .catch(() => {});
   }
+  const qualifiedColumnTarget = completionQualifiedTableTarget(completionContext);
+  const qualifiedColumnCacheKey = qualifiedColumnTarget ? completionCacheKey(qualifiedColumnTarget) : undefined;
+  if (qualifiedColumnTarget && qualifiedColumnCacheKey && !cachedColumnsByTable.has(qualifiedColumnCacheKey)) {
+    const target = completionMetadataTarget(qualifiedColumnTarget);
+    if (target) {
+      void connectionStore
+        .refreshCompletionColumns(connectionId, target.database, qualifiedColumnTarget.name, target.schema)
+        .then((columns) => {
+          if (columns.length > 0) cachedColumnsByTable.set(qualifiedColumnCacheKey, columns);
+        })
+        .catch(() => {});
+    }
+  }
   for (const refTable of completionContext.referencedTables) {
     if (refTable.columns && refTable.columns.length > 0) continue;
     const cacheKey = refTable.schema ? `${refTable.schema}.${refTable.name}` : refTable.name;
+    if (cacheKey === qualifiedColumnCacheKey) continue;
     if (cachedColumnsByTable.has(cacheKey)) continue;
     const target = completionMetadataTarget(refTable);
     if (!target) continue;
@@ -1262,6 +1307,11 @@ async function performAsyncCompletionWithResult(epoch: number, completionContext
     refs = matched.map((t) => ({ name: t.name, schema: t.schema }));
   }
 
+  const qualifiedColumnTarget = completionQualifiedTableTarget(completionContext);
+  if (qualifiedColumnTarget && !refs.some((ref) => completionTablesMatch(ref, qualifiedColumnTarget))) {
+    refs.push(qualifiedColumnTarget);
+  }
+
   // Populate CTE columns from parsed definitions
   const cteDefs = extractCteDefinitions(fullDoc);
   for (const refTable of refs) {
@@ -1363,7 +1413,8 @@ async function performAsyncCompletionWithResult(epoch: number, completionContext
 function isReferencedTableQualifier(completionContext: ReturnType<typeof getSqlCompletionContext>): boolean {
   if (!completionContext.qualifier) return false;
   const qualifier = completionContext.qualifier.toLowerCase();
-  return completionContext.referencedTables.some((table) => table.alias?.toLowerCase() === qualifier || table.name.toLowerCase() === qualifier);
+  const qualifiedColumnTarget = completionQualifiedTableTarget(completionContext);
+  return completionContext.referencedTables.some((table) => table.alias?.toLowerCase() === qualifier || table.name.toLowerCase() === qualifier || (!!qualifiedColumnTarget && completionTablesMatch(table, qualifiedColumnTarget)));
 }
 
 function mergeCompletionObjects(existing: SqlCompletionObject[], incoming: SqlCompletionObject[]) {
