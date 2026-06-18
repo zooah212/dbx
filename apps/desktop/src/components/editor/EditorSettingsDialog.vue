@@ -77,6 +77,9 @@ const settingsStore = useSettingsStore();
 const connectionStore = useConnectionStore();
 const { isDark, themeMode, setThemeMode } = useTheme();
 
+let cachedSystemFonts: string[] | null = null;
+let pendingSystemFonts: Promise<string[]> | null = null;
+
 const props = defineProps<{
   open: boolean;
   initialTab?: string;
@@ -289,6 +292,7 @@ function confirmDeleteSnippet(snippet: SqlSnippet) {
 }
 
 const presetFontLabels = new Map(FONT_FAMILIES.map((font) => [font.value, font.label]));
+const presetFontValues = new Set(FONT_FAMILIES.map((font) => font.value));
 
 function cssFontFamilyForName(name: string): string {
   return `'${name.replace(/\\/g, "\\\\").replace(/'/g, "\\'")}', monospace`;
@@ -317,11 +321,23 @@ function displayFontFamily(value: string): string {
   return presetFontLabels.get(value) ?? readableFontFamily(value);
 }
 
+function fontOptionStyle(value: string) {
+  return presetFontValues.has(value) || value === editFontFamily.value ? { fontFamily: value } : undefined;
+}
+
 async function loadSystemFontOptions() {
   if (systemFontsLoaded.value || systemFontsLoading.value) return;
   systemFontsLoading.value = true;
   try {
-    systemFonts.value = await listSystemFonts();
+    if (cachedSystemFonts) {
+      systemFonts.value = cachedSystemFonts;
+    } else {
+      pendingSystemFonts ??= listSystemFonts().finally(() => {
+        pendingSystemFonts = null;
+      });
+      cachedSystemFonts = await pendingSystemFonts;
+      systemFonts.value = cachedSystemFonts;
+    }
     systemFontsLoaded.value = true;
   } catch {
     systemFonts.value = [];
@@ -370,7 +386,6 @@ watch(
       editExportBatchSize.value = settingsStore.editorSettings.exportBatchSize;
       editToolbarItems.value = { ...settingsStore.editorSettings.toolbarItems };
       editSnippets.value = settingsStore.editorSettings.snippets.map((s) => ({ ...s }));
-      void loadSystemFontOptions();
     }
   },
   { immediate: true },
@@ -1413,7 +1428,6 @@ watch(
                     :search-placeholder="t('settings.searchFont')"
                     :empty-text="t('settings.noFontsFound')"
                     :loading-text="t('settings.loadingFonts')"
-                    :loading="systemFontsLoading"
                     allow-custom
                     :display-name="displayFontFamily"
                     :normalize-custom="normalizeCustomFontFamilyInput"
@@ -1428,7 +1442,7 @@ watch(
                       </span>
                     </template>
                     <template #option-label="{ option, label }">
-                      <span class="truncate" :style="{ fontFamily: option }">{{ label }}</span>
+                      <span class="truncate" :style="fontOptionStyle(option)">{{ label }}</span>
                     </template>
                     <template #custom-option-label="{ value }">
                       <span class="truncate" :style="{ fontFamily: value }">
