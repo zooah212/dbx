@@ -1066,6 +1066,7 @@ export default {
     newQuery: "新建查询",
     newInsert: "新建新增",
     newSql: "新建 SQL",
+    generateSql: "生成 SQL",
     newUpdate: "新建更新",
     sqlHistory: "历史查询",
     noSqlHistory: "暂无关联 SQL",

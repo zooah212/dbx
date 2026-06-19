@@ -1055,6 +1055,7 @@ export default {
     duplicateConnection: "接続を複製",
     newQuery: "新しいクエリ",
     newSql: "新しいSQL",
+    generateSql: "SQLを生成",
     newInsert: "新しいINSERT",
     newUpdate: "新しいUPDATE",
     sqlHistory: "クエリ履歴",

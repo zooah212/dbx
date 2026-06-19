@@ -1001,6 +1001,7 @@ export default {
     duplicateConnection: "Duplicar Conexão",
     newQuery: "Nova Consulta",
     newSql: "Novo SQL",
+    generateSql: "Gerar SQL",
     newInsert: "Novo Insert",
     newUpdate: "Novo Update",
     sqlHistory: "Histórico de Consultas",

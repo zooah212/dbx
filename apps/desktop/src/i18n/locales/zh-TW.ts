@@ -981,6 +981,7 @@ export default {
     duplicateConnection: "複製連線",
     newQuery: "建立查詢",
     newSql: "新增 SQL",
+    generateSql: "產生 SQL",
     newInsert: "建立新增",
     newUpdate: "建立更新",
     sqlHistory: "歷史查詢",
