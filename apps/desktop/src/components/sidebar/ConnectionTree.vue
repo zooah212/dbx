@@ -402,7 +402,7 @@ async function ensureTreeLoadedForTarget(target: ActiveTabSidebarTarget, opts?: 
         await store.loadMongoDatabases(connId);
       } else if (config.db_type === "elasticsearch") {
         await store.loadElasticsearchIndices(connId);
-      } else if (config.db_type === "qdrant" || config.db_type === "milvus") {
+      } else if (config.db_type === "qdrant" || config.db_type === "milvus" || config.db_type === "weaviate") {
         await store.loadVectorCollections(connId);
       } else if (config.db_type === "mq") {
         await store.loadMqTenants(connId, loadOptions);

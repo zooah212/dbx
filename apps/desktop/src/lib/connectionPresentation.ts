@@ -129,6 +129,7 @@ export function connectionUrlPlaceholder(dbType: DatabaseType): string {
     case "elasticsearch":
     case "qdrant":
     case "milvus":
+    case "weaviate":
       return "http://user:password@host:port";
 
     case "dameng":

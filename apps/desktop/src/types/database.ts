@@ -13,6 +13,7 @@ export type DatabaseType =
   | "elasticsearch"
   | "qdrant"
   | "milvus"
+  | "weaviate"
   | "doris"
   | "starrocks"
   | "manticoresearch"

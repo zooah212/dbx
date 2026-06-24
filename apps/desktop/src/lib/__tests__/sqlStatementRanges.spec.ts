@@ -330,6 +330,7 @@ describe("supportsExecutionTargetPicker", () => {
     expect(supportsExecutionTargetPicker("elasticsearch")).toBe(false);
     expect(supportsExecutionTargetPicker("qdrant")).toBe(false);
     expect(supportsExecutionTargetPicker("milvus")).toBe(false);
+    expect(supportsExecutionTargetPicker("weaviate")).toBe(false);
     expect(supportsExecutionTargetPicker("etcd")).toBe(false);
     expect(supportsExecutionTargetPicker("mq")).toBe(false);
     expect(supportsExecutionTargetPicker("neo4j")).toBe(false);

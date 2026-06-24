@@ -407,6 +407,7 @@ export const useConnectionStore = defineStore("connection", () => {
       elasticsearch: "Elasticsearch",
       qdrant: "Qdrant",
       milvus: "Milvus",
+      weaviate: "Weaviate",
       doris: "Doris",
       starrocks: "StarRocks",
       manticoresearch: "Manticore Search",
@@ -950,7 +951,7 @@ export const useConnectionStore = defineStore("connection", () => {
       await loadMongoDatabases(connectionId);
     } else if (config.db_type === "elasticsearch") {
       await loadElasticsearchIndices(connectionId);
-    } else if (config.db_type === "qdrant" || config.db_type === "milvus") {
+    } else if (config.db_type === "qdrant" || config.db_type === "milvus" || config.db_type === "weaviate") {
       await loadVectorCollections(connectionId);
     } else if (config.db_type === "mq") {
       await loadMqTenants(connectionId, { force: true });
@@ -2115,7 +2116,7 @@ export const useConnectionStore = defineStore("connection", () => {
         await loadMongoDatabases(node.connectionId);
       } else if (config?.db_type === "elasticsearch") {
         await loadElasticsearchIndices(node.connectionId);
-      } else if (config?.db_type === "qdrant" || config?.db_type === "milvus") {
+      } else if (config?.db_type === "qdrant" || config?.db_type === "milvus" || config?.db_type === "weaviate") {
         await loadVectorCollections(node.connectionId);
       } else if (config?.db_type === "mq") {
         await loadMqTenants(node.connectionId, options);
