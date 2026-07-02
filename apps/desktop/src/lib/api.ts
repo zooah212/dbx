@@ -375,6 +375,7 @@ export const documentListDatabases = forward("documentListDatabases");
 export const mongoListDatabases = forward("mongoListDatabases");
 export const documentListCollections = forward("documentListCollections");
 export const mongoListCollections = forward("mongoListCollections");
+export const vectorGetCollectionDetail = forward("vectorGetCollectionDetail");
 export const mongoCreateDatabase = forward("mongoCreateDatabase");
 export const mongoDropDatabase = forward("mongoDropDatabase");
 export const mongoDropCollection = forward("mongoDropCollection");

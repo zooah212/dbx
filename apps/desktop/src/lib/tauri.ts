@@ -1480,6 +1480,10 @@ export async function mongoListCollections(connectionId: string, database: strin
   return documentListCollections(connectionId, database);
 }
 
+export async function vectorGetCollectionDetail(connectionId: string, database: string, collection: string): Promise<CollectionInfo> {
+  return invoke("vector_collection_detail", { connectionId, database, collection });
+}
+
 export async function mongoCreateDatabase(connectionId: string, database: string): Promise<void> {
   return invoke("mongo_create_database", { connectionId, database });
 }

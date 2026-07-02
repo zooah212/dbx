@@ -844,6 +844,25 @@ pub async fn list_vector_collections_core(
     db::vector_driver::list_collections_with_db(&client, database).await
 }
 
+/// Get detailed metadata for a single vector collection (dimension, config, etc).
+pub async fn get_vector_collection_detail_core(
+    state: &AppState,
+    connection_id: &str,
+    database: &str,
+    collection: &str,
+) -> Result<db::vector_driver::CollectionInfo, String> {
+    let pool_key =
+        state.get_or_create_pool(connection_id, if database.is_empty() { None } else { Some(database) }).await?;
+    let client = {
+        let connections = state.connections.read().await;
+        match connections.get(&pool_key) {
+            Some(PoolKind::VectorDb(client)) => client.clone(),
+            _ => return Err("Not a vector database connection".to_string()),
+        }
+    };
+    db::vector_driver::get_collection_detail(&client, database, collection).await
+}
+
 pub async fn get_table_comment_core(
     state: &AppState,
     connection_id: &str,

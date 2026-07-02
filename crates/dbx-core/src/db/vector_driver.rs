@@ -241,6 +241,102 @@ async fn list_chroma_collections(client: &VectorClient) -> Result<Vec<Collection
     Ok(infos)
 }
 
+pub async fn get_collection_detail(
+    client: &VectorClient,
+    database: &str,
+    collection: &str,
+) -> Result<CollectionInfo, String> {
+    match client.kind {
+        VectorDbKind::Qdrant => get_qdrant_collection_detail(client, collection).await,
+        VectorDbKind::Milvus => get_milvus_collection_detail(client, database, collection).await,
+        VectorDbKind::Weaviate => {
+            // Weaviate REST API does not expose vector dimension
+            Ok(CollectionInfo { name: collection.to_string(), id: collection.to_string(), dimension: None })
+        }
+        VectorDbKind::ChromaDb => get_chroma_collection_detail(client, collection).await,
+    }
+}
+
+async fn get_qdrant_collection_detail(client: &VectorClient, collection: &str) -> Result<CollectionInfo, String> {
+    let body = send_json(client.get(&format!("/collections/{}", path_segment(collection))), "Qdrant").await?;
+    let dim = body
+        .pointer("/result/config/params/vectors/size")
+        .and_then(Value::as_u64)
+        .or_else(|| {
+            body.pointer("/result/config/params/vectors")
+                .and_then(Value::as_object)
+                .and_then(|obj| obj.values().find_map(|v| v.get("size").and_then(|s| s.as_u64())))
+        })
+        .map(|d| d as u32);
+    Ok(CollectionInfo { name: collection.to_string(), id: collection.to_string(), dimension: dim })
+}
+
+fn milvus_vector_dim_from_field(field: &Value) -> Option<u32> {
+    if let Some(dim) = field.pointer("/params/dim").and_then(Value::as_u64) {
+        return Some(dim as u32);
+    }
+    if let Some(params) = field.get("params").and_then(Value::as_array) {
+        for param in params {
+            if param.get("key").and_then(Value::as_str) == Some("dim") {
+                if let Some(v) = param.get("value").and_then(Value::as_str) {
+                    return v.parse().ok();
+                }
+                if let Some(v) = param.get("value").and_then(Value::as_u64) {
+                    return Some(v as u32);
+                }
+            }
+        }
+    }
+    None
+}
+
+async fn get_milvus_collection_detail(
+    client: &VectorClient,
+    database: &str,
+    collection: &str,
+) -> Result<CollectionInfo, String> {
+    let db_name = if database.is_empty() { "default" } else { database };
+    let body = send_json(
+        client
+            .post("/v2/vectordb/collections/describe")
+            .json(&serde_json::json!({ "dbName": db_name, "collectionName": collection })),
+        "Milvus",
+    )
+    .await?;
+    if body.get("code").and_then(Value::as_i64) != Some(0) {
+        let msg = body.get("message").and_then(Value::as_str).unwrap_or("unknown error");
+        return Err(format!("Milvus collection detail error: {msg}"));
+    }
+    let fields = body.pointer("/data/fields").and_then(Value::as_array);
+    let dim = fields
+        .and_then(|f| {
+            f.iter().find(|f| {
+                let t = f.get("type");
+                t.and_then(Value::as_str) == Some("FloatVector")
+                    || t.and_then(Value::as_str) == Some("BinaryVector")
+                    || t.and_then(Value::as_i64) == Some(101)
+                    || t.and_then(Value::as_i64) == Some(102)
+            })
+        })
+        .and_then(milvus_vector_dim_from_field);
+    Ok(CollectionInfo { name: collection.to_string(), id: collection.to_string(), dimension: dim })
+}
+
+async fn get_chroma_collection_detail(client: &VectorClient, collection: &str) -> Result<CollectionInfo, String> {
+    let body = send_json(
+        client.get(&format!(
+            "/api/v2/tenants/default_tenant/databases/default_database/collections/{}",
+            path_segment(collection)
+        )),
+        "ChromaDB",
+    )
+    .await?;
+    let name = body.get("name").and_then(Value::as_str).unwrap_or(collection);
+    let id = body.get("id").and_then(Value::as_str).unwrap_or(collection);
+    let dimension = body.get("dimension").and_then(|v| v.as_u64()).map(|d| d as u32);
+    Ok(CollectionInfo { name: name.to_string(), id: id.to_string(), dimension })
+}
+
 fn chroma_get_response_to_rows(body: &Value) -> Vec<Value> {
     let ids = body.get("ids").and_then(Value::as_array).cloned().unwrap_or_default();
     let docs = body.get("documents").and_then(Value::as_array).cloned().unwrap_or_default();
