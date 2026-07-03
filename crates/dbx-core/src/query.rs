@@ -884,7 +884,7 @@ fn resolve_query_timeout(timeout_secs: Option<u64>) -> Option<Duration> {
     }
 }
 
-async fn operation_budget_for_pool_key(
+pub async fn operation_budget_for_pool_key(
     state: &AppState,
     pool_key: &str,
     query_timeout: Option<Duration>,
