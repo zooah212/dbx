@@ -782,8 +782,17 @@ pub async fn export_database_sql_core(
     let mut functions: Vec<String> = Vec::new();
 
     if request.include_objects && request.selected_tables.is_empty() {
-        if let Ok(objects) =
-            crate::schema::list_objects_core(state, &request.connection_id, &request.database, &request.schema).await
+        if let Ok(objects) = crate::schema::list_objects_core(
+            state,
+            &request.connection_id,
+            &request.database,
+            &request.schema,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
         {
             for obj in &objects {
                 let ot = obj.object_type.to_uppercase();
