@@ -56,9 +56,11 @@ fn ssh_client_config() -> Config {
     preferred.kex = Cow::Owned(kex);
 
     let mut mac = preferred.mac.into_owned();
-    // Keep SHA-1 MAC support as a last-resort fallback for legacy SSH proxies.
-    if !mac.contains(&mac::HMAC_SHA1) {
-        mac.push(mac::HMAC_SHA1);
+    // Keep SHA-1 MAC variants as last-resort fallbacks for legacy SSH proxies.
+    for algorithm in [mac::HMAC_SHA1_ETM, mac::HMAC_SHA1] {
+        if !mac.contains(&algorithm) {
+            mac.push(algorithm);
+        }
     }
     preferred.mac = Cow::Owned(mac);
 
@@ -934,10 +936,12 @@ mod tests {
     fn ssh_client_config_keeps_legacy_mac_after_safe_defaults() {
         let config = ssh_client_config();
         let mac = config.preferred.mac;
-        let sha2_index = mac.iter().position(|algorithm| *algorithm == russh::mac::HMAC_SHA256).unwrap();
+        let sha2_etm_index = mac.iter().position(|algorithm| *algorithm == russh::mac::HMAC_SHA256_ETM).unwrap();
+        let sha1_etm_index = mac.iter().position(|algorithm| *algorithm == russh::mac::HMAC_SHA1_ETM).unwrap();
         let sha1_index = mac.iter().position(|algorithm| *algorithm == russh::mac::HMAC_SHA1).unwrap();
 
-        assert!(sha2_index < sha1_index);
+        assert!(sha2_etm_index < sha1_etm_index);
+        assert!(sha1_etm_index < sha1_index);
     }
 
     #[test]
